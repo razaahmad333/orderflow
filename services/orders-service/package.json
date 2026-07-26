@@ -17,7 +17,10 @@
     "db:migrate": "tsx src/scripts/migrate.ts",
     "lab:deadlock-retry": "tsx src/scripts/deadlock-retry-demo.ts",
     "lab:lock-timeout": "tsx src/scripts/lock-timeout-demo.ts",
-    "lab:pool": "tsx src/scripts/pool-saturation-demo.ts"
+    "lab:pool": "tsx src/scripts/pool-saturation-demo.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:all": "npm run test && npm run test:integration",
+    "check:all": "npm run typecheck && npm run test:all"
   },
   "keywords": [],
   "author": "",
