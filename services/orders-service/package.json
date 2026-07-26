@@ -1,0 +1,48 @@
+{
+  "name": "@orderflow/orders-service",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/server.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "db:migrate": "tsx src/scripts/migrate.ts",
+    "lab:deadlock-retry": "tsx src/scripts/deadlock-retry-demo.ts",
+    "lab:lock-timeout": "tsx src/scripts/lock-timeout-demo.ts",
+    "lab:pool": "tsx src/scripts/pool-saturation-demo.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "pg": "^8.22.0",
+    "pino": "^10.3.1",
+    "pino-http": "^11.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.1",
+    "@types/pg": "^8.20.0",
+    "@types/supertest": "^7.2.1",
+    "supertest": "^7.2.2",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  }
+}

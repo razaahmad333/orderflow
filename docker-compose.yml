@@ -1,0 +1,71 @@
+name: orderflow
+
+services:
+  postgres:
+    image: postgres:16-alpine
+
+    environment:
+      POSTGRES_DB: orderflow
+      POSTGRES_USER: orderflow
+      POSTGRES_PASSWORD: orderflow-dev
+
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - orderflow-postgres-data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U orderflow -d orderflow
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
+
+  orders-service:
+    build:
+      context: ./services/orders-service
+      dockerfile: Dockerfile
+
+    environment:
+      NODE_ENV: production
+      SERVICE_NAME: orders-service
+      PORT: 3000
+      LOG_LEVEL: info
+      SHUTDOWN_TIMEOUT_MS: 10000
+
+      DATABASE_URL: postgresql://orderflow:orderflow-dev@postgres:5432/orderflow
+      DB_POOL_MAX: 10
+      DB_CONNECT_TIMEOUT_MS: 2000
+      DB_HEALTHCHECK_INTERVAL_MS: 2000
+      ORDER_TRANSACTION_HOLD_MS: 0
+      TRANSACTION_MAX_ATTEMPTS: 3
+      TRANSACTION_RETRY_BASE_DELAY_MS: 50
+      TRANSACTION_LOCK_TIMEOUT_MS: 1000
+      TRANSACTION_STATEMENT_TIMEOUT_MS: 5000
+    ports:
+      - "3000:3000"
+
+    init: true
+
+    stop_grace_period: 15s
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -qO-
+        - http://127.0.0.1:3000/health/ready
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  orderflow-postgres-data:

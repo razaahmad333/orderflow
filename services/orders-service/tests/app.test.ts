@@ -1,0 +1,103 @@
+import pino from "pino";
+import request from "supertest";
+import { beforeEach, describe, expect, it } from "vitest";
+import type { Pool } from "pg";
+import {
+  createApp,
+  type ReadinessState
+} from "../src/app";
+import type { AppConfig } from "../src/config";
+
+const config: AppConfig = {
+  NODE_ENV: "test",
+  SERVICE_NAME: "orders-service",
+  PORT: 3000,
+  LOG_LEVEL: "silent",
+  SHUTDOWN_TIMEOUT_MS: 1000,
+  DATABASE_URL: "postgresql://test:test@localhost:5432/test",
+  DB_POOL_MAX: 5,
+  DB_CONNECT_TIMEOUT_MS: 1000,
+  DB_HEALTHCHECK_INTERVAL_MS: 1000,
+  ORDER_TRANSACTION_HOLD_MS: 0,
+  TRANSACTION_MAX_ATTEMPTS: 3,
+  TRANSACTION_RETRY_BASE_DELAY_MS: 50,
+  TRANSACTION_LOCK_TIMEOUT_MS: 1000,
+  TRANSACTION_STATEMENT_TIMEOUT_MS: 5000,
+};
+
+const logger = pino({
+  level: "silent"
+});
+const pool = {} as Pool;
+describe("orders-service", () => {
+  let readiness: ReadinessState;
+  let app: ReturnType<typeof createApp>;
+
+  beforeEach(() => {
+    readiness = {
+      ready: true
+    };
+
+    app = createApp({
+      config,
+      logger,
+      readiness,
+      pool,
+    });
+  });
+
+  it("returns a successful liveness response", async () => {
+    const response = await request(app)
+      .get("/health/live")
+      .expect(200);
+
+    expect(response.body.status).toBe("alive");
+    expect(response.body.service).toBe("orders-service");
+    expect(response.body.uptimeSeconds).toBeTypeOf("number");
+  });
+
+  it("returns ready while the service can receive traffic", async () => {
+    const response = await request(app)
+      .get("/health/ready")
+      .expect(200);
+
+    expect(response.body).toEqual({
+      status: "ready",
+      service: "orders-service"
+    });
+  });
+
+  it("returns 503 when the service is not ready", async () => {
+    readiness.ready = false;
+    readiness.reason = "dependency_unavailable";
+
+    const response = await request(app)
+      .get("/health/ready")
+      .expect(503);
+
+    expect(response.body).toEqual({
+      status: "not-ready",
+      service: "orders-service",
+      reason: "dependency_unavailable"
+    });
+  });
+
+  it("generates a request ID", async () => {
+    const response = await request(app)
+      .get("/health/live")
+      .expect(200);
+    const requestId = response.headers["x-request-id"];
+
+    expect(requestId).toBeTypeOf("string");
+    expect(requestId).toBeDefined();
+    expect(requestId!.length).toBeGreaterThan(0);
+  });
+
+  it("preserves an incoming request ID", async () => {
+    await request(app)
+      .get("/health/live")
+      .set("x-request-id", "orderflow-test-request")
+      .expect("x-request-id", "orderflow-test-request")
+      .expect(200);
+  });
+});
