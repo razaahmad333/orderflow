@@ -4,7 +4,9 @@ import type { Pool } from "pg";
 import { AppError } from "../errors";
 import { placeOrderSchema } from "./order-schema";
 import { placeOrder } from "./order-service";
- 
+ import { listOrdersQuerySchema } from "./order-list-schema";
+
+ import { listOrders } from "./order-query-service";
 interface CreateOrderRouterOptions {
   transactionHoldMs: number;
 
@@ -15,12 +17,37 @@ interface CreateOrderRouterOptions {
   transactionStatementTimeoutMs: number;
 }
 
+
+
 export function createOrderRouter(
   pool: Pool,
   options: CreateOrderRouterOptions,
 ): Router {
   const router = Router();
 
+
+  router.get("/", async (request, response, next) => {
+    try {
+      const parsedQuery = listOrdersQuerySchema.safeParse(request.query);
+
+      if (!parsedQuery.success) {
+        throw new AppError(
+          400,
+          "invalid_query",
+          "Order query validation failed",
+          parsedQuery.error.flatten(),
+        );
+      }
+
+      const page = await listOrders(pool, parsedQuery.data);
+
+      response.status(200).json(page);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  
   router.post("/", async (request, response, next) => {
     try {
       const parsedRequest = placeOrderSchema.safeParse(request.body);

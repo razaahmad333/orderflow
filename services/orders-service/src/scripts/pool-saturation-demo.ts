@@ -16,6 +16,10 @@ interface TaskResult {
   waitMs: number;
 }
 
+interface BackendPidRow {
+  backend_pid: number;
+}
+
 const logger = pino({
   level: process.env.LOG_LEVEL ?? "info",
 
@@ -82,6 +86,18 @@ async function executeTask(
   try {
     client = await pool.connect();
 
+    const backendPidResult =
+      await client.query<BackendPidRow>(
+        `
+          SELECT pg_backend_pid()
+            AS backend_pid
+        `
+      );
+
+    const backendPid =
+      backendPidResult.rows[0]
+        ?.backend_pid;
+
     const waitMs =
       Date.now() - waitStartedAt;
 
@@ -89,7 +105,7 @@ async function executeTask(
       {
         taskId,
         waitMs,
-        processId: client.processID
+        processId: backendPid
       },
       "Task acquired database connection"
     );
@@ -106,7 +122,7 @@ async function executeTask(
     logger.info(
       {
         taskId,
-        processId: client.processID
+        processId: backendPid
       },
       "Task query completed"
     );
