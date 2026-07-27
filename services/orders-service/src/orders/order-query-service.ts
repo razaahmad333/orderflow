@@ -3,7 +3,7 @@ import type { Pool } from "pg";
 import { AppError } from "../errors";
 import { decodeOrderCursor, encodeOrderCursor } from "./order-cursor";
 import type { ListOrdersInput, OrderStatus } from "./order-list-schema";
-
+import type { HighValueOrdersInput } from "./high-value-order-schema";
 interface OrderListRow {
   id: string;
   tenant_id: string;
@@ -132,4 +132,42 @@ export async function listOrders(
     items,
     nextCursor,
   };
+}
+
+export async function listHighValueOrders(
+  pool: Pool,
+  input: HighValueOrdersInput,
+): Promise<ListedOrder[]> {
+  const result = await pool.query<OrderListRow>(
+    `
+        SELECT
+          id,
+          tenant_id,
+          external_id,
+          status,
+          total_minor,
+          currency,
+          created_at
+        FROM orders
+        WHERE tenant_id = $1
+          AND status = $2
+        ORDER BY
+          total_minor DESC,
+          id DESC
+        LIMIT $3
+      `,
+    [input.tenantId, input.status, input.limit],
+  );
+
+  return result.rows.map(
+    (row): ListedOrder => ({
+      id: row.id,
+      tenantId: row.tenant_id,
+      externalId: row.external_id,
+      status: row.status,
+      totalMinor: row.total_minor,
+      currency: row.currency,
+      createdAt: row.created_at.toISOString(),
+    }),
+  );
 }
