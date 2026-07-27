@@ -2,12 +2,10 @@ import pino from "pino";
 import request from "supertest";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import {
-  createApp,
-  type ReadinessState
-} from "../src/app";
+import { createApp, type ReadinessState } from "../src/app";
 import type { AppConfig } from "../src/config";
 import type { ProductCache } from "../src/products/product-service";
+import { SingleFlight } from "../src/single-flight";
 
 const config: AppConfig = {
   NODE_ENV: "test",
@@ -30,7 +28,7 @@ const config: AppConfig = {
 };
 
 const logger = pino({
-  level: "silent"
+  level: "silent",
 });
 const pool = {} as Pool;
 
@@ -50,14 +48,14 @@ const redis = {
   },
 } satisfies ProductCache;
 
-
 describe("orders-service", () => {
   let readiness: ReadinessState;
   let app: ReturnType<typeof createApp>;
+  const productSingleFlight = new SingleFlight();
 
   beforeEach(() => {
     readiness = {
-      ready: true
+      ready: true,
     };
 
     app = createApp({
@@ -66,13 +64,13 @@ describe("orders-service", () => {
       readiness,
       pool,
       redis,
+      productSingleFlight,
     });
+
   });
 
   it("returns a successful liveness response", async () => {
-    const response = await request(app)
-      .get("/health/live")
-      .expect(200);
+    const response = await request(app).get("/health/live").expect(200);
 
     expect(response.body.status).toBe("alive");
     expect(response.body.service).toBe("orders-service");
@@ -80,13 +78,11 @@ describe("orders-service", () => {
   });
 
   it("returns ready while the service can receive traffic", async () => {
-    const response = await request(app)
-      .get("/health/ready")
-      .expect(200);
+    const response = await request(app).get("/health/ready").expect(200);
 
     expect(response.body).toEqual({
       status: "ready",
-      service: "orders-service"
+      service: "orders-service",
     });
   });
 
@@ -94,21 +90,17 @@ describe("orders-service", () => {
     readiness.ready = false;
     readiness.reason = "dependency_unavailable";
 
-    const response = await request(app)
-      .get("/health/ready")
-      .expect(503);
+    const response = await request(app).get("/health/ready").expect(503);
 
     expect(response.body).toEqual({
       status: "not-ready",
       service: "orders-service",
-      reason: "dependency_unavailable"
+      reason: "dependency_unavailable",
     });
   });
 
   it("generates a request ID", async () => {
-    const response = await request(app)
-      .get("/health/live")
-      .expect(200);
+    const response = await request(app).get("/health/live").expect(200);
     const requestId = response.headers["x-request-id"];
 
     expect(requestId).toBeTypeOf("string");

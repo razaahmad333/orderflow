@@ -20,7 +20,8 @@
     "lab:pool": "tsx src/scripts/pool-saturation-demo.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:all": "npm run test && npm run test:integration",
-    "check:all": "npm run typecheck && npm run test:all"
+    "check:all": "npm run typecheck && npm run test:all",
+    "lab:cache-stampede": "tsx src/scripts/cache-stampede-demo.ts"
   },
   "keywords": [],
   "author": "",

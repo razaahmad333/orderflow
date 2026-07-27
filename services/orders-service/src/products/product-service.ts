@@ -1,14 +1,7 @@
 import { z } from "zod";
 import { AppError } from "../errors";
-
-interface DatabaseQuery {
-  query<Row>(
-    text: string,
-    values?: readonly unknown[]
-  ): Promise<{
-    rows: Row[];
-  }>;
-}
+import type { DatabaseQuery } from "../database-query";
+import type { SingleFlight } from "../single-flight";
 
 export interface ProductCache {
   readonly isReady: boolean;
@@ -20,7 +13,7 @@ export interface ProductCache {
     value: string,
     options: {
       EX: number;
-    }
+    },
   ): Promise<unknown>;
 
   del(key: string): Promise<number>;
@@ -45,27 +38,21 @@ const cachedProductSchema = z.object({
   priceMinor: z.string(),
   currency: z.string(),
   active: z.boolean(),
-  updatedAt: z.string().datetime()
+  updatedAt: z.string().datetime(),
 });
 
-export type Product = z.infer<
-  typeof cachedProductSchema
->;
+export type Product = z.infer<typeof cachedProductSchema>;
 
-export type ProductCacheStatus =
-  | "HIT"
-  | "MISS"
-  | "BYPASS";
+export type ProductCacheStatus = "HIT" | "MISS" | "COALESCED" | "BYPASS";
 
 interface GetProductInput {
   tenantId: string;
   productId: string;
   cacheTtlSeconds: number;
 
-  onCacheError?: (
-    error: unknown,
-    operation: "get" | "set" | "delete"
-  ) => void;
+  coordinator?: SingleFlight;
+
+  onCacheError?: (error: unknown, operation: "get" | "set" | "delete") => void;
 }
 
 interface GetProductResult {
@@ -75,62 +62,18 @@ interface GetProductResult {
 
 export function createProductCacheKey(
   tenantId: string,
-  productId: string
+  productId: string,
 ): string {
-  return [
-    "orderflow",
-    "product",
-    "v1",
-    tenantId,
-    productId
-  ].join(":");
+  return ["orderflow", "product", "v1", tenantId, productId].join(":");
 }
 
-export async function getProductById(
+async function loadProductFromDatabase(
   database: DatabaseQuery,
-  cache: ProductCache,
-  input: GetProductInput
-): Promise<GetProductResult> {
-  const cacheKey = createProductCacheKey(
-    input.tenantId,
-    input.productId
-  );
-
-  if (cache.isReady) {
-    try {
-      const cachedValue =
-        await cache.get(cacheKey);
-
-      if (cachedValue !== null) {
-        const parsed =
-          cachedProductSchema.safeParse(
-            JSON.parse(cachedValue)
-          );
-
-        if (parsed.success) {
-          return {
-            product: parsed.data,
-            cacheStatus: "HIT"
-          };
-        }
-
-        /*
-         * Invalid or obsolete cache data should not
-         * be returned. Remove it and use PostgreSQL.
-         */
-        await cache.del(cacheKey);
-      }
-    } catch (error) {
-      input.onCacheError?.(
-        error,
-        "get"
-      );
-    }
-  }
-
-  const result =
-    await database.query<ProductRow>(
-      `
+  tenantId: string,
+  productId: string,
+): Promise<Product> {
+  const result = await database.query<ProductRow>(
+    `
         SELECT
           id,
           tenant_id,
@@ -144,23 +87,16 @@ export async function getProductById(
         WHERE tenant_id = $1
           AND id = $2
       `,
-      [
-        input.tenantId,
-        input.productId
-      ]
-    );
+    [tenantId, productId],
+  );
 
   const row = result.rows[0];
 
   if (!row) {
-    throw new AppError(
-      404,
-      "product_not_found",
-      "Product was not found"
-    );
+    throw new AppError(404, "product_not_found", "Product was not found");
   }
 
-  const product: Product = {
+  return {
     id: row.id,
     tenantId: row.tenant_id,
     sku: row.sku,
@@ -168,56 +104,140 @@ export async function getProductById(
     priceMinor: row.price_minor,
     currency: row.currency,
     active: row.active,
-    updatedAt:
-      row.updated_at.toISOString()
+    updatedAt: row.updated_at.toISOString(),
   };
+}
 
-  if (!cache.isReady) {
-    return {
-      product,
-      cacheStatus: "BYPASS"
-    };
-  }
+export async function getProductById(
+  database: DatabaseQuery,
+  cache: ProductCache,
+  input: GetProductInput,
+): Promise<GetProductResult> {
+  const cacheKey = createProductCacheKey(input.tenantId, input.productId);
 
-  try {
-    await cache.set(
-      cacheKey,
-      JSON.stringify(product),
-      {
-        EX: input.cacheTtlSeconds
+  /*
+   * Fast path: return immediately when Redis contains
+   * a valid cached product.
+   */
+  if (cache.isReady) {
+    try {
+      const cachedValue = await cache.get(cacheKey);
+
+      if (cachedValue !== null) {
+        const parsed = cachedProductSchema.safeParse(JSON.parse(cachedValue));
+
+        if (parsed.success) {
+          return {
+            product: parsed.data,
+            cacheStatus: "HIT",
+          };
+        }
+
+        await cache.del(cacheKey);
       }
+    } catch (error) {
+      input.onCacheError?.(error, "get");
+    }
+  }
+
+  async function loadAndCache(): Promise<{
+    product: Product;
+    cacheWriteSucceeded: boolean;
+  }> {
+    /*
+     * A request may have populated Redis after our
+     * first GET but before this caller became leader.
+     *
+     * Rechecking avoids an unnecessary PostgreSQL query
+     * in that race.
+     */
+    if (cache.isReady) {
+      try {
+        const cachedValue = await cache.get(cacheKey);
+
+        if (cachedValue !== null) {
+          const parsed = cachedProductSchema.safeParse(JSON.parse(cachedValue));
+
+          if (parsed.success) {
+            return {
+              product: parsed.data,
+              cacheWriteSucceeded: true,
+            };
+          }
+
+          await cache.del(cacheKey);
+        }
+      } catch (error) {
+        input.onCacheError?.(error, "get");
+      }
+    }
+
+    const product = await loadProductFromDatabase(
+      database,
+      input.tenantId,
+      input.productId,
     );
 
-    return {
-      product,
-      cacheStatus: "MISS"
-    };
-  } catch (error) {
-    input.onCacheError?.(
-      error,
-      "set"
-    );
+    if (!cache.isReady) {
+      return {
+        product,
+        cacheWriteSucceeded: false,
+      };
+    }
+
+    try {
+      await cache.set(cacheKey, JSON.stringify(product), {
+        EX: input.cacheTtlSeconds,
+      });
+
+      return {
+        product,
+        cacheWriteSucceeded: true,
+      };
+    } catch (error) {
+      input.onCacheError?.(error, "set");
+
+      return {
+        product,
+        cacheWriteSucceeded: false,
+      };
+    }
+  }
+
+  if (!input.coordinator) {
+    const result = await loadAndCache();
 
     return {
-      product,
-      cacheStatus: "BYPASS"
+      product: result.product,
+
+      cacheStatus: result.cacheWriteSucceeded ? "MISS" : "BYPASS",
     };
   }
+
+  const coordinated = await input.coordinator.run(cacheKey, loadAndCache);
+
+  if (coordinated.shared) {
+    return {
+      product: coordinated.value.product,
+      cacheStatus: "COALESCED",
+    };
+  }
+
+  return {
+    product: coordinated.value.product,
+
+    cacheStatus: coordinated.value.cacheWriteSucceeded ? "MISS" : "BYPASS",
+  };
 }
 
 export async function invalidateProductCache(
   cache: ProductCache,
   tenantId: string,
-  productId: string
+  productId: string,
 ): Promise<void> {
   if (!cache.isReady) {
     return;
   }
 
-  await cache.del(
-    createProductCacheKey(
-      tenantId,
-      productId
-    )
-  );
+  await cache.del(createProductCacheKey(tenantId, productId));
 }

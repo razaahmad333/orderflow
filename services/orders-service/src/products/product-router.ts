@@ -9,6 +9,8 @@ import {
   type ProductCache
 } from "./product-service";
 
+import type { SingleFlight } from "../single-flight";
+
 const productParamsSchema = z.object({
   productId: z.string().uuid()
 });
@@ -24,93 +26,62 @@ interface CreateProductRouterOptions {
 export function createProductRouter(
   pool: Pool,
   cache: ProductCache,
-  options: CreateProductRouterOptions
+  coordinator: SingleFlight,
+  options: CreateProductRouterOptions,
 ): Router {
   const router = Router();
 
   router.get(
     "/:productId",
 
-    async (
-      request,
-      response,
-      next
-    ) => {
+    async (request, response, next) => {
       try {
-        const parsedParams =
-          productParamsSchema.safeParse(
-            request.params
-          );
+        const parsedParams = productParamsSchema.safeParse(request.params);
 
-        const parsedQuery =
-          productQuerySchema.safeParse(
-            request.query
-          );
+        const parsedQuery = productQuerySchema.safeParse(request.query);
 
-        if (
-          !parsedParams.success ||
-          !parsedQuery.success
-        ) {
+        if (!parsedParams.success || !parsedQuery.success) {
           throw new AppError(
             400,
             "invalid_request",
             "Product request validation failed",
             {
-              params:
-                parsedParams.success
-                  ? undefined
-                  : parsedParams.error.flatten(),
+              params: parsedParams.success
+                ? undefined
+                : parsedParams.error.flatten(),
 
-              query:
-                parsedQuery.success
-                  ? undefined
-                  : parsedQuery.error.flatten()
-            }
+              query: parsedQuery.success
+                ? undefined
+                : parsedQuery.error.flatten(),
+            },
           );
         }
 
-        const result =
-          await getProductById(
-            pool,
-            cache,
-            {
-              tenantId:
-                parsedQuery.data.tenantId,
+        const result = await getProductById(pool, cache, {
+          tenantId: parsedQuery.data.tenantId,
 
-              productId:
-                parsedParams.data.productId,
+          productId: parsedParams.data.productId,
 
-              cacheTtlSeconds:
-                options.cacheTtlSeconds,
+          cacheTtlSeconds: options.cacheTtlSeconds,
+          coordinator,
+          onCacheError(error, operation) {
+            request.log.warn(
+              {
+                err: error,
+                cacheOperation: operation,
+              },
+              "Product cache operation failed",
+            );
+          },
+        });
 
-              onCacheError(
-                error,
-                operation
-              ) {
-                request.log.warn(
-                  {
-                    err: error,
-                    cacheOperation:
-                      operation
-                  },
-                  "Product cache operation failed"
-                );
-              }
-            }
-          );
+        response.setHeader("x-cache", result.cacheStatus);
 
-        response.setHeader(
-          "x-cache",
-          result.cacheStatus
-        );
-
-        response
-          .status(200)
-          .json(result.product);
+        response.status(200).json(result.product);
       } catch (error) {
         next(error);
       }
-    }
+    },
   );
 
   return router;

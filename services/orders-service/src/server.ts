@@ -6,6 +6,7 @@ import { createDatabasePool } from "./database";
 import { startDatabaseMonitor } from "./dependency-monitor";
 import { createLogger } from "./logger";
 import { createRedisClient } from "./redis";
+import { SingleFlight } from "./single-flight";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -19,6 +20,8 @@ async function main(): Promise<void> {
   const pool = createDatabasePool(config, logger);
   const redis = createRedisClient(config, logger);
 
+  const productSingleFlight = new SingleFlight();
+
   void redis.connect().catch((error) => {
     logger.warn(
       { err: error },
@@ -31,6 +34,7 @@ async function main(): Promise<void> {
     readiness,
     pool,
     redis,
+    productSingleFlight,
   });
 
   const databaseMonitor = startDatabaseMonitor({

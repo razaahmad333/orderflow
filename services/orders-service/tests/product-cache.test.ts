@@ -1,18 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import type { DatabaseQuery } from "../src/database-query";
 
 import {
   getProductById,
   type ProductCache,
 } from "../src/products/product-service";
-
-interface TestDatabaseQuery {
-  query: <Row>(
-    text: string,
-    values?: readonly unknown[]
-  ) => Promise<{
-    rows: Row[];
-  }>;
-}
 
 describe("product cache-aside", () => {
   it("loads PostgreSQL once and then serves Redis", async () => {
@@ -39,8 +31,8 @@ describe("product cache-aside", () => {
       ],
     });
 
-    const database: TestDatabaseQuery = {
-      query: query as unknown as TestDatabaseQuery["query"],
+    const database: DatabaseQuery = {
+      query: query as unknown as DatabaseQuery["query"],
     };
 
     const values = new Map<string, string>();

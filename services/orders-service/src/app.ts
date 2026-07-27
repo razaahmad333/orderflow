@@ -16,7 +16,7 @@ import { createProductRouter } from "./products/product-router";
 
 import type { ProductCache } from "./products/product-service";
 
-
+import type { SingleFlight } from "./single-flight";
 export interface ReadinessState {
   ready: boolean;
   reason?: string;
@@ -27,6 +27,7 @@ interface CreateAppDependencies {
   readiness: ReadinessState;
   pool: Pool;
   redis: ProductCache;
+  productSingleFlight: SingleFlight;
 }
 
 
@@ -36,6 +37,7 @@ export function createApp({
   readiness,
   pool,
   redis,
+  productSingleFlight,
 }: CreateAppDependencies) {
   const app = express();
 
@@ -92,7 +94,6 @@ export function createApp({
     });
   });
 
-  
   app.use(
     "/orders",
     createOrderRouter(pool, {
@@ -110,11 +111,11 @@ export function createApp({
 
   app.use(
     "/products",
-    createProductRouter(pool, redis, {
+    createProductRouter(pool, redis,  productSingleFlight,{
       cacheTtlSeconds: config.PRODUCT_CACHE_TTL_SECONDS,
     }),
   );
-  
+
   app.use((request, response) => {
     response.status(404).json({
       error: "route_not_found",
