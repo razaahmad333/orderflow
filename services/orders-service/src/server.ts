@@ -7,6 +7,7 @@ import { startDatabaseMonitor } from "./dependency-monitor";
 import { createLogger } from "./logger";
 import { createRedisClient } from "./redis";
 import { SingleFlight } from "./single-flight";
+import { RedisDistributedLock } from "./distributed-lock";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -20,6 +21,8 @@ async function main(): Promise<void> {
   const pool = createDatabasePool(config, logger);
   const redis = createRedisClient(config, logger);
 
+  const productDistributedLock = new RedisDistributedLock(redis);
+
   const productSingleFlight = new SingleFlight();
 
   void redis.connect().catch((error) => {
@@ -28,6 +31,7 @@ async function main(): Promise<void> {
       "Initial Redis connection failed; cache bypass remains available",
     );
   });
+
   const app = createApp({
     config,
     logger,
@@ -35,8 +39,8 @@ async function main(): Promise<void> {
     pool,
     redis,
     productSingleFlight,
+    productDistributedLock,
   });
-
   const databaseMonitor = startDatabaseMonitor({
     pool,
     logger,
@@ -111,7 +115,7 @@ async function main(): Promise<void> {
 
         logger.info("Redis connection closed");
       }
-      
+
       logger.info("Graceful shutdown completed");
 
       process.exitCode = exitCode;

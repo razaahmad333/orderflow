@@ -83,6 +83,27 @@ const environmentSchema = z.object({
     .min(1)
     .max(86_400)
     .default(60),
+
+  PRODUCT_CACHE_LOCK_TTL_MS: z.coerce
+    .number()
+    .int()
+    .min(500)
+    .max(30_000)
+    .default(3_000),
+
+  PRODUCT_CACHE_LOCK_WAIT_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(10_000)
+    .default(1_000),
+
+  PRODUCT_CACHE_LOCK_POLL_MS: z.coerce
+    .number()
+    .int()
+    .min(10)
+    .max(1_000)
+    .default(50),
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;

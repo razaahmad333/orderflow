@@ -17,6 +17,7 @@ import { createProductRouter } from "./products/product-router";
 import type { ProductCache } from "./products/product-service";
 
 import type { SingleFlight } from "./single-flight";
+import type { DistributedLock } from "./distributed-lock";
 export interface ReadinessState {
   ready: boolean;
   reason?: string;
@@ -28,6 +29,7 @@ interface CreateAppDependencies {
   pool: Pool;
   redis: ProductCache;
   productSingleFlight: SingleFlight;
+  productDistributedLock: DistributedLock;
 }
 
 
@@ -38,6 +40,7 @@ export function createApp({
   pool,
   redis,
   productSingleFlight,
+  productDistributedLock,
 }: CreateAppDependencies) {
   const app = express();
 
@@ -111,9 +114,21 @@ export function createApp({
 
   app.use(
     "/products",
-    createProductRouter(pool, redis,  productSingleFlight,{
-      cacheTtlSeconds: config.PRODUCT_CACHE_TTL_SECONDS,
-    }),
+    createProductRouter(
+      pool,
+      redis,
+      productSingleFlight,
+      productDistributedLock,
+      {
+        cacheTtlSeconds: config.PRODUCT_CACHE_TTL_SECONDS,
+
+        lockTtlMs: config.PRODUCT_CACHE_LOCK_TTL_MS,
+
+        lockWaitMs: config.PRODUCT_CACHE_LOCK_WAIT_MS,
+
+        lockPollMs: config.PRODUCT_CACHE_LOCK_POLL_MS,
+      },
+    ),
   );
 
   app.use((request, response) => {

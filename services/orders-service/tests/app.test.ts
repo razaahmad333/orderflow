@@ -25,6 +25,9 @@ const config: AppConfig = {
   REDIS_URL: "redis://localhost:6380",
   REDIS_CONNECT_TIMEOUT_MS: 1000,
   PRODUCT_CACHE_TTL_SECONDS: 60,
+  PRODUCT_CACHE_LOCK_TTL_MS: 3000,
+  PRODUCT_CACHE_LOCK_WAIT_MS: 1000,
+  PRODUCT_CACHE_LOCK_POLL_MS: 50,
 };
 
 const logger = pino({
@@ -52,7 +55,11 @@ describe("orders-service", () => {
   let readiness: ReadinessState;
   let app: ReturnType<typeof createApp>;
   const productSingleFlight = new SingleFlight();
-
+  const productDistributedLock = {
+    async acquire() {
+      return null;
+    },
+  };
   beforeEach(() => {
     readiness = {
       ready: true,
@@ -65,8 +72,8 @@ describe("orders-service", () => {
       pool,
       redis,
       productSingleFlight,
+      productDistributedLock,
     });
-
   });
 
   it("returns a successful liveness response", async () => {

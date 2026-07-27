@@ -10,6 +10,8 @@ import {
 } from "./product-service";
 
 import type { SingleFlight } from "../single-flight";
+import type { DistributedLock } from "../distributed-lock";
+
 
 const productParamsSchema = z.object({
   productId: z.string().uuid()
@@ -21,12 +23,16 @@ const productQuerySchema = z.object({
 
 interface CreateProductRouterOptions {
   cacheTtlSeconds: number;
+  lockTtlMs: number;
+  lockWaitMs: number;
+  lockPollMs: number;
 }
 
 export function createProductRouter(
   pool: Pool,
   cache: ProductCache,
   coordinator: SingleFlight,
+  distributedLock: DistributedLock,
   options: CreateProductRouterOptions,
 ): Router {
   const router = Router();
@@ -64,6 +70,14 @@ export function createProductRouter(
 
           cacheTtlSeconds: options.cacheTtlSeconds,
           coordinator,
+
+          distributedLock,
+
+          lockTtlMs: options.lockTtlMs,
+
+          lockWaitMs: options.lockWaitMs,
+
+          lockPollMs: options.lockPollMs,
           onCacheError(error, operation) {
             request.log.warn(
               {

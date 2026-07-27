@@ -2,7 +2,7 @@ import { z } from "zod";
 import { AppError } from "../errors";
 import type { DatabaseQuery } from "../database-query";
 import type { SingleFlight } from "../single-flight";
-
+import type { DistributedLock } from "../distributed-lock";
 export interface ProductCache {
   readonly isReady: boolean;
 
@@ -43,7 +43,12 @@ const cachedProductSchema = z.object({
 
 export type Product = z.infer<typeof cachedProductSchema>;
 
-export type ProductCacheStatus = "HIT" | "MISS" | "COALESCED" | "BYPASS";
+export type ProductCacheStatus =
+  | "HIT"
+  | "MISS"
+  | "COALESCED"
+  | "LOCK_WAIT_HIT"
+  | "BYPASS";
 
 interface GetProductInput {
   tenantId: string;
@@ -51,10 +56,17 @@ interface GetProductInput {
   cacheTtlSeconds: number;
 
   coordinator?: SingleFlight;
+  distributedLock?: DistributedLock;
 
-  onCacheError?: (error: unknown, operation: "get" | "set" | "delete") => void;
+  lockTtlMs?: number;
+  lockWaitMs?: number;
+  lockPollMs?: number;
+
+  onCacheError?: (
+    error: unknown,
+    operation: "get" | "set" | "delete" | "lock" | "unlock",
+  ) => void;
 }
-
 interface GetProductResult {
   product: Product;
   cacheStatus: ProductCacheStatus;
@@ -108,6 +120,88 @@ async function loadProductFromDatabase(
   };
 }
 
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+async function readCachedProduct(
+  cache: ProductCache,
+  cacheKey: string,
+  onCacheError: GetProductInput["onCacheError"] | undefined,
+): Promise<Product | null> {
+  if (!cache.isReady) {
+    return null;
+  }
+
+  try {
+    const cachedValue = await cache.get(cacheKey);
+
+    if (cachedValue === null) {
+      return null;
+    }
+
+    const parsed = cachedProductSchema.safeParse(JSON.parse(cachedValue));
+
+    if (parsed.success) {
+      return parsed.data;
+    }
+
+    await cache.del(cacheKey);
+
+    return null;
+  } catch (error) {
+    onCacheError?.(error, "get");
+    return null;
+  }
+}
+
+async function writeCachedProduct(
+  cache: ProductCache,
+  cacheKey: string,
+  product: Product,
+  ttlSeconds: number,
+  onCacheError: GetProductInput["onCacheError"] | undefined,
+): Promise<boolean> {
+  if (!cache.isReady) {
+    return false;
+  }
+
+  try {
+    await cache.set(cacheKey, JSON.stringify(product), {
+      EX: ttlSeconds,
+    });
+
+    return true;
+  } catch (error) {
+    onCacheError?.(error, "set");
+    return false;
+  }
+}
+
+async function waitForCachedProduct(
+  cache: ProductCache,
+  cacheKey: string,
+  waitMs: number,
+  pollMs: number,
+  onCacheError: GetProductInput["onCacheError"] | undefined,
+): Promise<Product | null> {
+  const deadline = Date.now() + waitMs;
+
+  while (Date.now() < deadline) {
+    await delay(pollMs);
+
+    const product = await readCachedProduct(cache, cacheKey, onCacheError);
+
+    if (product) {
+      return product;
+    }
+  }
+
+  return null;
+}
+
 export async function getProductById(
   database: DatabaseQuery,
   cache: ProductCache,
@@ -115,61 +209,120 @@ export async function getProductById(
 ): Promise<GetProductResult> {
   const cacheKey = createProductCacheKey(input.tenantId, input.productId);
 
-  /*
-   * Fast path: return immediately when Redis contains
-   * a valid cached product.
-   */
-  if (cache.isReady) {
-    try {
-      const cachedValue = await cache.get(cacheKey);
+  const initialCacheValue = await readCachedProduct(
+    cache,
+    cacheKey,
+    input.onCacheError,
+  );
 
-      if (cachedValue !== null) {
-        const parsed = cachedProductSchema.safeParse(JSON.parse(cachedValue));
-
-        if (parsed.success) {
-          return {
-            product: parsed.data,
-            cacheStatus: "HIT",
-          };
-        }
-
-        await cache.del(cacheKey);
-      }
-    } catch (error) {
-      input.onCacheError?.(error, "get");
-    }
+  if (initialCacheValue) {
+    return {
+      product: initialCacheValue,
+      cacheStatus: "HIT",
+    };
   }
 
-  async function loadAndCache(): Promise<{
+  async function loadAuthoritativeProduct(): Promise<{
     product: Product;
-    cacheWriteSucceeded: boolean;
+    cacheStatus: ProductCacheStatus;
   }> {
     /*
-     * A request may have populated Redis after our
-     * first GET but before this caller became leader.
-     *
-     * Rechecking avoids an unnecessary PostgreSQL query
-     * in that race.
+     * Another local or remote request may have filled
+     * Redis since this request's first cache lookup.
      */
-    if (cache.isReady) {
+    const secondCacheValue = await readCachedProduct(
+      cache,
+      cacheKey,
+      input.onCacheError,
+    );
+
+    if (secondCacheValue) {
+      return {
+        product: secondCacheValue,
+        cacheStatus: "HIT",
+      };
+    }
+
+    const distributedLock = input.distributedLock;
+
+    if (distributedLock && cache.isReady) {
+      let lease;
+
       try {
-        const cachedValue = await cache.get(cacheKey);
+        lease = await distributedLock.acquire(
+          cacheKey,
+          input.lockTtlMs ?? 3_000,
+        );
+      } catch (error) {
+        input.onCacheError?.(error, "lock");
+      }
 
-        if (cachedValue !== null) {
-          const parsed = cachedProductSchema.safeParse(JSON.parse(cachedValue));
+      if (lease) {
+        try {
+          /*
+           * Recheck after acquiring the lease. A previous
+           * owner may have populated Redis just before
+           * releasing the lock.
+           */
+          const afterLockCacheValue = await readCachedProduct(
+            cache,
+            cacheKey,
+            input.onCacheError,
+          );
 
-          if (parsed.success) {
+          if (afterLockCacheValue) {
             return {
-              product: parsed.data,
-              cacheWriteSucceeded: true,
+              product: afterLockCacheValue,
+              cacheStatus: "HIT",
             };
           }
 
-          await cache.del(cacheKey);
+          const product = await loadProductFromDatabase(
+            database,
+            input.tenantId,
+            input.productId,
+          );
+
+          const cached = await writeCachedProduct(
+            cache,
+            cacheKey,
+            product,
+            input.cacheTtlSeconds,
+            input.onCacheError,
+          );
+
+          return {
+            product,
+            cacheStatus: cached ? "MISS" : "BYPASS",
+          };
+        } finally {
+          try {
+            await lease.release();
+          } catch (error) {
+            input.onCacheError?.(error, "unlock");
+          }
         }
-      } catch (error) {
-        input.onCacheError?.(error, "get");
       }
+
+      const remotelyLoadedProduct = await waitForCachedProduct(
+        cache,
+        cacheKey,
+        input.lockWaitMs ?? 1_000,
+        input.lockPollMs ?? 50,
+        input.onCacheError,
+      );
+
+      if (remotelyLoadedProduct) {
+        return {
+          product: remotelyLoadedProduct,
+          cacheStatus: "LOCK_WAIT_HIT",
+        };
+      }
+
+      /*
+       * Bounded wait expired. Fall back to PostgreSQL
+       * rather than making the endpoint unavailable.
+       */
     }
 
     const product = await loadProductFromDatabase(
@@ -178,43 +331,28 @@ export async function getProductById(
       input.productId,
     );
 
-    if (!cache.isReady) {
-      return {
-        product,
-        cacheWriteSucceeded: false,
-      };
-    }
-
-    try {
-      await cache.set(cacheKey, JSON.stringify(product), {
-        EX: input.cacheTtlSeconds,
-      });
-
-      return {
-        product,
-        cacheWriteSucceeded: true,
-      };
-    } catch (error) {
-      input.onCacheError?.(error, "set");
-
-      return {
-        product,
-        cacheWriteSucceeded: false,
-      };
-    }
-  }
-
-  if (!input.coordinator) {
-    const result = await loadAndCache();
+    const cached = await writeCachedProduct(
+      cache,
+      cacheKey,
+      product,
+      input.cacheTtlSeconds,
+      input.onCacheError,
+    );
 
     return {
-      product: result.product,
-
-      cacheStatus: result.cacheWriteSucceeded ? "MISS" : "BYPASS",
+      product,
+      cacheStatus: cached ? "MISS" : "BYPASS",
     };
   }
 
-  const coordinated = await input.coordinator.run(cacheKey, loadAndCache);
+  if (!input.coordinator) {
+    return loadAuthoritativeProduct();
+  }
+
+  const coordinated = await input.coordinator.run(
+    cacheKey,
+    loadAuthoritativeProduct,
+  );
 
   if (coordinated.shared) {
     return {
@@ -223,11 +361,7 @@ export async function getProductById(
     };
   }
 
-  return {
-    product: coordinated.value.product,
-
-    cacheStatus: coordinated.value.cacheWriteSucceeded ? "MISS" : "BYPASS",
-  };
+  return coordinated.value;
 }
 
 export async function invalidateProductCache(
