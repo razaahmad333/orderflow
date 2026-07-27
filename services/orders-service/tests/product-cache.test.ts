@@ -25,6 +25,7 @@ describe("product cache-aside", () => {
           price_minor: "1299",
           currency: "GBP",
           active: true,
+          version: "0",
 
           updated_at: new Date("2026-07-27T00:00:00.000Z"),
         },

@@ -3,6 +3,10 @@ import { AppError } from "../errors";
 import type { DatabaseQuery } from "../database-query";
 import type { SingleFlight } from "../single-flight";
 import type { DistributedLock } from "../distributed-lock";
+import type { TransactionRetryEvent } from "../transaction";
+import { withTransactionRetry } from "../transaction";
+import type { UpdateProductInput } from "./product-update-schema";
+
 export interface ProductCache {
   readonly isReady: boolean;
 
@@ -28,6 +32,7 @@ interface ProductRow {
   currency: string;
   active: boolean;
   updated_at: Date;
+  version: string;
 }
 
 const cachedProductSchema = z.object({
@@ -38,6 +43,7 @@ const cachedProductSchema = z.object({
   priceMinor: z.string(),
   currency: z.string(),
   active: z.boolean(),
+  version: z.string().regex(/^\d+$/),
   updatedAt: z.string().datetime(),
 });
 
@@ -72,6 +78,24 @@ interface GetProductResult {
   cacheStatus: ProductCacheStatus;
 }
 
+interface UpdateProductOptions {
+  maxTransactionAttempts: number;
+  transactionRetryBaseDelayMs: number;
+  transactionLockTimeoutMs: number;
+  transactionStatementTimeoutMs: number;
+
+  onTransactionRetry?: (event: TransactionRetryEvent) => void;
+
+  onCacheError?: (error: unknown, operation: "delete") => void;
+}
+
+export type CacheInvalidationStatus = "DELETED" | "BYPASS" | "FAILED";
+
+export interface UpdateProductResult {
+  product: Product;
+  cacheInvalidation: CacheInvalidationStatus;
+}
+
 export function createProductCacheKey(
   tenantId: string,
   productId: string,
@@ -94,7 +118,8 @@ async function loadProductFromDatabase(
           price_minor,
           currency,
           active,
-          updated_at
+          updated_at,
+          version
         FROM products
         WHERE tenant_id = $1
           AND id = $2
@@ -116,6 +141,7 @@ async function loadProductFromDatabase(
     priceMinor: row.price_minor,
     currency: row.currency,
     active: row.active,
+    version: row.version,
     updatedAt: row.updated_at.toISOString(),
   };
 }
@@ -374,4 +400,154 @@ export async function invalidateProductCache(
   }
 
   await cache.del(createProductCacheKey(tenantId, productId));
+}
+
+export async function updateProduct(
+  pool: import("pg").Pool,
+  cache: ProductCache,
+  input: UpdateProductInput,
+  options: UpdateProductOptions,
+): Promise<UpdateProductResult> {
+  const product = await withTransactionRetry(
+    pool,
+
+    async (client) => {
+      const result = await client.query<ProductRow>(
+        `
+            UPDATE products
+            SET
+              name = COALESCE(
+                $4,
+                name
+              ),
+
+              price_minor = COALESCE(
+                $5::BIGINT,
+                price_minor
+              ),
+
+              active = COALESCE(
+                $6,
+                active
+              ),
+
+              version = version + 1,
+              updated_at = NOW()
+
+            WHERE tenant_id = $1
+              AND id = $2
+              AND version = $3::BIGINT
+
+            RETURNING
+              id,
+              tenant_id,
+              sku,
+              name,
+              price_minor,
+              currency,
+              active,
+              version,
+              updated_at
+          `,
+        [
+          input.tenantId,
+          input.productId,
+          input.expectedVersion,
+          input.name ?? null,
+          input.priceMinor ?? null,
+          input.active ?? null,
+        ],
+      );
+
+      const updated = result.rows[0];
+
+      if (updated) {
+        return {
+          id: updated.id,
+          tenantId: updated.tenant_id,
+          sku: updated.sku,
+          name: updated.name,
+          priceMinor: updated.price_minor,
+          currency: updated.currency,
+          active: updated.active,
+          version: updated.version,
+          updatedAt: updated.updated_at.toISOString(),
+        };
+      }
+
+      const current = await client.query<{
+        version: string;
+      }>(
+        `
+            SELECT version
+            FROM products
+            WHERE tenant_id = $1
+              AND id = $2
+          `,
+        [input.tenantId, input.productId],
+      );
+
+      const existing = current.rows[0];
+
+      if (!existing) {
+        throw new AppError(404, "product_not_found", "Product was not found");
+      }
+
+      throw new AppError(
+        409,
+        "product_version_conflict",
+        "The product was modified by another request",
+        {
+          expectedVersion: input.expectedVersion,
+
+          currentVersion: existing.version,
+        },
+      );
+    },
+
+    {
+      maxAttempts: options.maxTransactionAttempts,
+
+      baseDelayMs: options.transactionRetryBaseDelayMs,
+
+      lockTimeoutMs: options.transactionLockTimeoutMs,
+
+      statementTimeoutMs: options.transactionStatementTimeoutMs,
+
+      onRetry: options.onTransactionRetry,
+    },
+  );
+
+  /*
+   * withTransactionRetry returns only after COMMIT.
+   * Cache invalidation therefore happens after the
+   * authoritative database change becomes visible.
+   */
+  if (!cache.isReady) {
+    return {
+      product,
+      cacheInvalidation: "BYPASS",
+    };
+  }
+
+  try {
+    await cache.del(createProductCacheKey(input.tenantId, input.productId));
+
+    return {
+      product,
+      cacheInvalidation: "DELETED",
+    };
+  } catch (error) {
+    options.onCacheError?.(error, "delete");
+
+    /*
+     * The database transaction has already committed.
+     * We cannot roll it back because Redis deletion
+     * failed.
+     */
+    return {
+      product,
+      cacheInvalidation: "FAILED",
+    };
+  }
 }

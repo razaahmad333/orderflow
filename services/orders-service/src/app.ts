@@ -112,24 +112,32 @@ export function createApp({
     }),
   );
 
-  app.use(
-    "/products",
-    createProductRouter(
-      pool,
-      redis,
-      productSingleFlight,
-      productDistributedLock,
-      {
-        cacheTtlSeconds: config.PRODUCT_CACHE_TTL_SECONDS,
+ app.use(
+   "/products",
+   createProductRouter(
+     pool,
+     redis,
+     productSingleFlight,
+     productDistributedLock,
+     {
+       cacheTtlSeconds: config.PRODUCT_CACHE_TTL_SECONDS,
 
-        lockTtlMs: config.PRODUCT_CACHE_LOCK_TTL_MS,
+       lockTtlMs: config.PRODUCT_CACHE_LOCK_TTL_MS,
 
-        lockWaitMs: config.PRODUCT_CACHE_LOCK_WAIT_MS,
+       lockWaitMs: config.PRODUCT_CACHE_LOCK_WAIT_MS,
 
-        lockPollMs: config.PRODUCT_CACHE_LOCK_POLL_MS,
-      },
-    ),
-  );
+       lockPollMs: config.PRODUCT_CACHE_LOCK_POLL_MS,
+
+       maxTransactionAttempts: config.TRANSACTION_MAX_ATTEMPTS,
+
+       transactionRetryBaseDelayMs: config.TRANSACTION_RETRY_BASE_DELAY_MS,
+
+       transactionLockTimeoutMs: config.TRANSACTION_LOCK_TIMEOUT_MS,
+
+       transactionStatementTimeoutMs: config.TRANSACTION_STATEMENT_TIMEOUT_MS,
+     },
+   ),
+ );
 
   app.use((request, response) => {
     response.status(404).json({
