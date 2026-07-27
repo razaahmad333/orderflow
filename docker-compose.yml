@@ -1,6 +1,24 @@
 name: orderflow
 
 services:
+  redis:
+    image: redis:7-alpine
+
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 3s
+      timeout: 2s
+      retries: 10
   postgres:
     image: postgres:16-alpine
 
@@ -45,6 +63,11 @@ services:
       TRANSACTION_RETRY_BASE_DELAY_MS: 50
       TRANSACTION_LOCK_TIMEOUT_MS: 1000
       TRANSACTION_STATEMENT_TIMEOUT_MS: 5000
+
+      REDIS_URL: redis://redis:6379
+      REDIS_CONNECT_TIMEOUT_MS: 1000
+      PRODUCT_CACHE_TTL_SECONDS: 60
+      
     ports:
       - "3000:3000"
 

@@ -7,6 +7,7 @@ import {
   type ReadinessState
 } from "../src/app";
 import type { AppConfig } from "../src/config";
+import type { ProductCache } from "../src/products/product-service";
 
 const config: AppConfig = {
   NODE_ENV: "test",
@@ -23,12 +24,33 @@ const config: AppConfig = {
   TRANSACTION_RETRY_BASE_DELAY_MS: 50,
   TRANSACTION_LOCK_TIMEOUT_MS: 1000,
   TRANSACTION_STATEMENT_TIMEOUT_MS: 5000,
+  REDIS_URL: "redis://localhost:6380",
+  REDIS_CONNECT_TIMEOUT_MS: 1000,
+  PRODUCT_CACHE_TTL_SECONDS: 60,
 };
 
 const logger = pino({
   level: "silent"
 });
 const pool = {} as Pool;
+
+const redis = {
+  isReady: false,
+
+  async get() {
+    return null;
+  },
+
+  async set() {
+    return undefined;
+  },
+
+  async del() {
+    return 0;
+  },
+} satisfies ProductCache;
+
+
 describe("orders-service", () => {
   let readiness: ReadinessState;
   let app: ReturnType<typeof createApp>;
@@ -43,6 +65,7 @@ describe("orders-service", () => {
       logger,
       readiness,
       pool,
+      redis,
     });
   });
 

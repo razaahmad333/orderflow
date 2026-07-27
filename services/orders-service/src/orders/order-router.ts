@@ -4,9 +4,11 @@ import type { Pool } from "pg";
 import { AppError } from "../errors";
 import { placeOrderSchema } from "./order-schema";
 import { placeOrder } from "./order-service";
- import { listOrdersQuerySchema } from "./order-list-schema";
+import { listOrdersQuerySchema } from "./order-list-schema";
 
- import { listOrders } from "./order-query-service";
+import { highValueOrdersQuerySchema } from "./high-value-order-schema";
+
+import { listHighValueOrders, listOrders } from "./order-query-service";
 interface CreateOrderRouterOptions {
   transactionHoldMs: number;
 
@@ -17,14 +19,38 @@ interface CreateOrderRouterOptions {
   transactionStatementTimeoutMs: number;
 }
 
-
-
 export function createOrderRouter(
   pool: Pool,
   options: CreateOrderRouterOptions,
 ): Router {
   const router = Router();
 
+  router.get(
+    "/high-value",
+
+    async (request, response, next) => {
+      try {
+        const parsedQuery = highValueOrdersQuerySchema.safeParse(request.query);
+
+        if (!parsedQuery.success) {
+          throw new AppError(
+            400,
+            "invalid_query",
+            "High-value order query validation failed",
+            parsedQuery.error.flatten(),
+          );
+        }
+
+        const orders = await listHighValueOrders(pool, parsedQuery.data);
+
+        response.status(200).json({
+          items: orders,
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
 
   router.get("/", async (request, response, next) => {
     try {
@@ -47,7 +73,6 @@ export function createOrderRouter(
     }
   });
 
-  
   router.post("/", async (request, response, next) => {
     try {
       const parsedRequest = placeOrderSchema.safeParse(request.body);
@@ -61,26 +86,26 @@ export function createOrderRouter(
         );
       }
 
-     const order = await placeOrder(pool, parsedRequest.data, {
-       transactionHoldMs: options.transactionHoldMs,
+      const order = await placeOrder(pool, parsedRequest.data, {
+        transactionHoldMs: options.transactionHoldMs,
 
-       maxTransactionAttempts: options.maxTransactionAttempts,
+        maxTransactionAttempts: options.maxTransactionAttempts,
 
-       transactionRetryBaseDelayMs: options.transactionRetryBaseDelayMs,
-       transactionLockTimeoutMs: options.transactionLockTimeoutMs,
+        transactionRetryBaseDelayMs: options.transactionRetryBaseDelayMs,
+        transactionLockTimeoutMs: options.transactionLockTimeoutMs,
 
-       transactionStatementTimeoutMs: options.transactionStatementTimeoutMs,
-       onTransactionRetry(event) {
-         request.log.warn(
-           {
-             ...event,
-             tenantId: parsedRequest.data.tenantId,
-             externalId: parsedRequest.data.externalId,
-           },
-           "Retrying order transaction",
-         );
-       },
-     });
+        transactionStatementTimeoutMs: options.transactionStatementTimeoutMs,
+        onTransactionRetry(event) {
+          request.log.warn(
+            {
+              ...event,
+              tenantId: parsedRequest.data.tenantId,
+              externalId: parsedRequest.data.externalId,
+            },
+            "Retrying order transaction",
+          );
+        },
+      });
 
       response.status(order.created ? 201 : 200).json(order);
     } catch (error) {

@@ -12,24 +12,30 @@ import pinoHttp from "pino-http";
 import type { AppConfig } from "./config";
 import { AppError } from "./errors";
 import { createOrderRouter } from "./orders/order-router";
+import { createProductRouter } from "./products/product-router";
+
+import type { ProductCache } from "./products/product-service";
+
 
 export interface ReadinessState {
   ready: boolean;
   reason?: string;
 }
-
 interface CreateAppDependencies {
   config: AppConfig;
   logger: Logger;
   readiness: ReadinessState;
   pool: Pool;
+  redis: ProductCache;
 }
+
 
 export function createApp({
   config,
   logger,
   readiness,
   pool,
+  redis,
 }: CreateAppDependencies) {
   const app = express();
 
@@ -102,6 +108,13 @@ export function createApp({
     }),
   );
 
+  app.use(
+    "/products",
+    createProductRouter(pool, redis, {
+      cacheTtlSeconds: config.PRODUCT_CACHE_TTL_SECONDS,
+    }),
+  );
+  
   app.use((request, response) => {
     response.status(404).json({
       error: "route_not_found",

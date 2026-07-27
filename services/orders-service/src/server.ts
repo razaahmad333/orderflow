@@ -5,6 +5,7 @@ import { loadConfig } from "./config";
 import { createDatabasePool } from "./database";
 import { startDatabaseMonitor } from "./dependency-monitor";
 import { createLogger } from "./logger";
+import { createRedisClient } from "./redis";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -16,12 +17,20 @@ async function main(): Promise<void> {
   };
 
   const pool = createDatabasePool(config, logger);
+  const redis = createRedisClient(config, logger);
 
+  void redis.connect().catch((error) => {
+    logger.warn(
+      { err: error },
+      "Initial Redis connection failed; cache bypass remains available",
+    );
+  });
   const app = createApp({
     config,
     logger,
     readiness,
     pool,
+    redis,
   });
 
   const databaseMonitor = startDatabaseMonitor({
@@ -92,6 +101,13 @@ async function main(): Promise<void> {
       await pool.end();
 
       logger.info("PostgreSQL pool closed");
+
+      if (redis.isOpen) {
+        await redis.close();
+
+        logger.info("Redis connection closed");
+      }
+      
       logger.info("Graceful shutdown completed");
 
       process.exitCode = exitCode;

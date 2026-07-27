@@ -67,6 +67,22 @@ const environmentSchema = z.object({
     .min(100)
     .max(60_000)
     .default(5_000),
+
+  REDIS_URL: z.string().url().default("redis://localhost:6380"),
+
+  REDIS_CONNECT_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(10_000)
+    .default(1_000),
+
+  PRODUCT_CACHE_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(86_400)
+    .default(60),
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;
