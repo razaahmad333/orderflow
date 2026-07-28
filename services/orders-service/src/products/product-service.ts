@@ -6,7 +6,10 @@ import type { DistributedLock } from "../distributed-lock";
 import type { TransactionRetryEvent } from "../transaction";
 import { withTransactionRetry } from "../transaction";
 import type { UpdateProductInput } from "./product-update-schema";
-
+import {
+  enqueueCacheInvalidation,
+  markCacheInvalidationProcessed,
+} from "../cache-invalidation-outbox";
 export interface ProductCache {
   readonly isReady: boolean;
 
@@ -89,7 +92,7 @@ interface UpdateProductOptions {
   onCacheError?: (error: unknown, operation: "delete") => void;
 }
 
-export type CacheInvalidationStatus = "DELETED" | "BYPASS" | "FAILED";
+export type CacheInvalidationStatus = "DELETED" | "QUEUED";
 
 export interface UpdateProductResult {
   product: Product;
@@ -408,7 +411,7 @@ export async function updateProduct(
   input: UpdateProductInput,
   options: UpdateProductOptions,
 ): Promise<UpdateProductResult> {
-  const product = await withTransactionRetry(
+  const transactionResult = await withTransactionRetry(
     pool,
 
     async (client) => {
@@ -462,7 +465,8 @@ export async function updateProduct(
       const updated = result.rows[0];
 
       if (updated) {
-        return {
+  
+        const product: Product = {
           id: updated.id,
           tenantId: updated.tenant_id,
           sku: updated.sku,
@@ -472,6 +476,21 @@ export async function updateProduct(
           active: updated.active,
           version: updated.version,
           updatedAt: updated.updated_at.toISOString(),
+        };
+
+        const cacheKey = createProductCacheKey(input.tenantId, input.productId);
+
+        const invalidationEventId = await enqueueCacheInvalidation(client, {
+          tenantId: input.tenantId,
+          entityType: "product",
+          entityId: input.productId,
+          cacheKey,
+        });
+
+        return {
+          product,
+          cacheKey,
+          invalidationEventId,
         };
       }
 
@@ -525,29 +544,37 @@ export async function updateProduct(
    */
   if (!cache.isReady) {
     return {
-      product,
-      cacheInvalidation: "BYPASS",
+      product: transactionResult.product,
+
+      cacheInvalidation: "QUEUED",
     };
   }
 
   try {
-    await cache.del(createProductCacheKey(input.tenantId, input.productId));
+    await cache.del(transactionResult.cacheKey);
+
+    /*
+     * If this database update fails, the worker may
+     * repeat the Redis deletion. DEL is idempotent,
+     * so duplicate processing is harmless.
+     */
+    await markCacheInvalidationProcessed(
+      pool,
+      transactionResult.invalidationEventId,
+    );
 
     return {
-      product,
+      product: transactionResult.product,
+
       cacheInvalidation: "DELETED",
     };
   } catch (error) {
     options.onCacheError?.(error, "delete");
 
-    /*
-     * The database transaction has already committed.
-     * We cannot roll it back because Redis deletion
-     * failed.
-     */
     return {
-      product,
-      cacheInvalidation: "FAILED",
+      product: transactionResult.product,
+
+      cacheInvalidation: "QUEUED",
     };
   }
 }

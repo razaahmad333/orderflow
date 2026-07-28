@@ -104,6 +104,27 @@ const environmentSchema = z.object({
     .min(10)
     .max(1_000)
     .default(50),
+
+  CACHE_INVALIDATION_POLL_MS: z.coerce
+    .number()
+    .int()
+    .min(250)
+    .max(60_000)
+    .default(2_000),
+
+  CACHE_INVALIDATION_BATCH_SIZE: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(20),
+
+  CACHE_INVALIDATION_LOCK_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(300_000)
+    .default(30_000),
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;

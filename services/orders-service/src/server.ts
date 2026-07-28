@@ -8,6 +8,7 @@ import { createLogger } from "./logger";
 import { createRedisClient } from "./redis";
 import { SingleFlight } from "./single-flight";
 import { RedisDistributedLock } from "./distributed-lock";
+import { startCacheInvalidationWorker } from "./cache-invalidation-worker";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -30,6 +31,18 @@ async function main(): Promise<void> {
       { err: error },
       "Initial Redis connection failed; cache bypass remains available",
     );
+  });
+
+  const cacheInvalidationWorker = startCacheInvalidationWorker({
+    pool,
+    cache: redis,
+    logger,
+
+    pollMs: config.CACHE_INVALIDATION_POLL_MS,
+
+    batchSize: config.CACHE_INVALIDATION_BATCH_SIZE,
+
+    lockMs: config.CACHE_INVALIDATION_LOCK_MS,
   });
 
   const app = createApp({
@@ -105,6 +118,10 @@ async function main(): Promise<void> {
       });
 
       logger.info("HTTP server stopped accepting connections");
+
+      await cacheInvalidationWorker.stop();
+
+      logger.info("Cache invalidation worker stopped");
 
       await pool.end();
 
