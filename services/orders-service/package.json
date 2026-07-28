@@ -21,15 +21,19 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:all": "npm run test && npm run test:integration",
     "check:all": "npm run typecheck && npm run test:all",
-    "lab:cache-stampede": "tsx src/scripts/cache-stampede-demo.ts"
+    "lab:cache-stampede": "tsx src/scripts/cache-stampede-demo.ts",
+    "start:job-dispatcher": "node dist/workers/job-dispatcher.js",
+    "start:notification-worker": "node dist/workers/notification-worker.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "bullmq": "^5.81.2",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "ioredis": "^5.11.1",
     "pg": "^8.22.0",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",

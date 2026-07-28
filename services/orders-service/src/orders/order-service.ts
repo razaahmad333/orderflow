@@ -8,7 +8,9 @@ import {
   type TransactionRetryEvent,
   withTransactionRetry,
 } from "../transaction";
+import { enqueueBackgroundJob } from "../jobs/background-job-outbox";
 
+import { notificationQueueName } from "../jobs/bullmq";
 interface ProductInventoryRow {
   product_id: string;
   price_minor: string;
@@ -330,6 +332,20 @@ export async function placeOrder(
       if (!confirmed) {
         throw new Error("Confirmed order was not returned");
       }
+
+      await enqueueBackgroundJob(client, {
+        tenantId: input.tenantId,
+        queueName: notificationQueueName,
+        jobType: "order-confirmed",
+
+        payload: {
+          tenantId: input.tenantId,
+          orderId: confirmed.id,
+          externalId: confirmed.external_id,
+          totalMinor: confirmed.total_minor,
+          currency: confirmed.currency,
+        },
+      });
 
       return mapOrder(confirmed, true);
     },

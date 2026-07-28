@@ -125,6 +125,49 @@ const environmentSchema = z.object({
     .min(1_000)
     .max(300_000)
     .default(30_000),
+  BACKGROUND_JOB_POLL_MS: z.coerce
+    .number()
+    .int()
+    .min(250)
+    .max(60_000)
+    .default(1_000),
+
+  BACKGROUND_JOB_BATCH_SIZE: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(20),
+
+  BACKGROUND_JOB_LOCK_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(300_000)
+    .default(30_000),
+
+  NOTIFICATION_JOB_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(3),
+
+  NOTIFICATION_JOB_BACKOFF_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(60_000)
+    .default(1_000),
+
+  NOTIFICATION_WORKER_CONCURRENCY: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(5),
+
+  SIMULATE_NOTIFICATION_FAILURES: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(20)
+    .default(0),
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;

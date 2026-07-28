@@ -75,6 +75,16 @@ services:
       CACHE_INVALIDATION_POLL_MS: 2000
       CACHE_INVALIDATION_BATCH_SIZE: 20
       CACHE_INVALIDATION_LOCK_MS: 30000
+
+      BACKGROUND_JOB_POLL_MS: 1000
+      BACKGROUND_JOB_BATCH_SIZE: 20
+      BACKGROUND_JOB_LOCK_MS: 30000
+
+      NOTIFICATION_JOB_ATTEMPTS: 3
+      NOTIFICATION_JOB_BACKOFF_MS: 1000
+      NOTIFICATION_WORKER_CONCURRENCY: 5
+
+      SIMULATE_NOTIFICATION_FAILURES: 0
       
     ports:
       - "3000:3000"
@@ -97,6 +107,116 @@ services:
       timeout: 2s
       retries: 3
       start_period: 5s
+  
+  job-dispatcher:
+    build:
+      context: ./services/orders-service
+      dockerfile: Dockerfile
+
+    command:
+      - node
+      - dist/workers/job-dispatcher.js
+
+    environment:
+      NODE_ENV: production
+      SERVICE_NAME: job-dispatcher
+      PORT: 3001
+      LOG_LEVEL: info
+      SHUTDOWN_TIMEOUT_MS: 10000
+
+      DATABASE_URL: postgresql://orderflow:orderflow-dev@postgres:5432/orderflow
+      DB_POOL_MAX: 5
+      DB_CONNECT_TIMEOUT_MS: 2000
+      DB_HEALTHCHECK_INTERVAL_MS: 2000
+
+      REDIS_URL: redis://redis:6379
+      REDIS_CONNECT_TIMEOUT_MS: 1000
+      PRODUCT_CACHE_TTL_SECONDS: 60
+      PRODUCT_CACHE_LOCK_TTL_MS: 3000
+      PRODUCT_CACHE_LOCK_WAIT_MS: 1000
+      PRODUCT_CACHE_LOCK_POLL_MS: 50
+
+      TRANSACTION_MAX_ATTEMPTS: 3
+      TRANSACTION_RETRY_BASE_DELAY_MS: 50
+      TRANSACTION_LOCK_TIMEOUT_MS: 1000
+      TRANSACTION_STATEMENT_TIMEOUT_MS: 5000
+      ORDER_TRANSACTION_HOLD_MS: 0
+
+      CACHE_INVALIDATION_POLL_MS: 2000
+      CACHE_INVALIDATION_BATCH_SIZE: 20
+      CACHE_INVALIDATION_LOCK_MS: 30000
+
+      BACKGROUND_JOB_POLL_MS: 1000
+      BACKGROUND_JOB_BATCH_SIZE: 20
+      BACKGROUND_JOB_LOCK_MS: 30000
+
+      NOTIFICATION_JOB_ATTEMPTS: 3
+      NOTIFICATION_JOB_BACKOFF_MS: 1000
+      NOTIFICATION_WORKER_CONCURRENCY: 5
+      SIMULATE_NOTIFICATION_FAILURES: 0
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+  notification-worker:
+    build:
+      context: ./services/orders-service
+      dockerfile: Dockerfile
+
+    command:
+      - node
+      - dist/workers/notification-worker.js
+
+    environment:
+      NODE_ENV: production
+      SERVICE_NAME: notification-worker
+      PORT: 3002
+      LOG_LEVEL: info
+      SHUTDOWN_TIMEOUT_MS: 10000
+
+      DATABASE_URL: postgresql://orderflow:orderflow-dev@postgres:5432/orderflow
+      DB_POOL_MAX: 5
+      DB_CONNECT_TIMEOUT_MS: 2000
+      DB_HEALTHCHECK_INTERVAL_MS: 2000
+
+      REDIS_URL: redis://redis:6379
+      REDIS_CONNECT_TIMEOUT_MS: 1000
+      PRODUCT_CACHE_TTL_SECONDS: 60
+      PRODUCT_CACHE_LOCK_TTL_MS: 3000
+      PRODUCT_CACHE_LOCK_WAIT_MS: 1000
+      PRODUCT_CACHE_LOCK_POLL_MS: 50
+
+      TRANSACTION_MAX_ATTEMPTS: 3
+      TRANSACTION_RETRY_BASE_DELAY_MS: 50
+      TRANSACTION_LOCK_TIMEOUT_MS: 1000
+      TRANSACTION_STATEMENT_TIMEOUT_MS: 5000
+      ORDER_TRANSACTION_HOLD_MS: 0
+
+      CACHE_INVALIDATION_POLL_MS: 2000
+      CACHE_INVALIDATION_BATCH_SIZE: 20
+      CACHE_INVALIDATION_LOCK_MS: 30000
+
+      BACKGROUND_JOB_POLL_MS: 1000
+      BACKGROUND_JOB_BATCH_SIZE: 20
+      BACKGROUND_JOB_LOCK_MS: 30000
+
+      NOTIFICATION_JOB_ATTEMPTS: 3
+      NOTIFICATION_JOB_BACKOFF_MS: 1000
+      NOTIFICATION_WORKER_CONCURRENCY: 5
+
+      SIMULATE_NOTIFICATION_FAILURES: 0
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
 
 volumes:
   orderflow-postgres-data:
