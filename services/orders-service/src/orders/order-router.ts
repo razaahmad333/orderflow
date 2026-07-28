@@ -9,6 +9,7 @@ import { listOrdersQuerySchema } from "./order-list-schema";
 import { highValueOrdersQuerySchema } from "./high-value-order-schema";
 
 import { listHighValueOrders, listOrders } from "./order-query-service";
+import type { OrderEventPublisher } from "../events/order-event-publisher";
 interface CreateOrderRouterOptions {
   transactionHoldMs: number;
 
@@ -21,6 +22,7 @@ interface CreateOrderRouterOptions {
 
 export function createOrderRouter(
   pool: Pool,
+  eventPublisher: OrderEventPublisher,
   options: CreateOrderRouterOptions,
 ): Router {
   const router = Router();
@@ -106,6 +108,40 @@ export function createOrderRouter(
           );
         },
       });
+      if (order.created) {
+        try {
+          await eventPublisher.publishOrderCreated({
+            tenantId: parsedRequest.data.tenantId,
+
+            orderId: order.id,
+            externalId: order.externalId,
+            totalMinor: order.totalMinor,
+            currency: order.currency,
+
+            items: parsedRequest.data.items,
+
+            requestId: String(request.id),
+          });
+        } catch (error) {
+          request.log.error(
+            {
+              err: error,
+              orderId: order.id,
+            },
+            "Order committed but Kafka publication failed",
+          );
+
+          throw new AppError(
+            503,
+            "order_event_publish_failed",
+            "The order was committed but its event could not be published",
+            {
+              orderId: order.id,
+              externalId: order.externalId,
+            },
+          );
+        }
+      }
 
       response.status(order.created ? 201 : 200).json(order);
     } catch (error) {

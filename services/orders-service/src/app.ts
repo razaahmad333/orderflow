@@ -18,6 +18,7 @@ import type { ProductCache } from "./products/product-service";
 
 import type { SingleFlight } from "./single-flight";
 import type { DistributedLock } from "./distributed-lock";
+import type { OrderEventPublisher } from "./events/order-event-publisher";
 export interface ReadinessState {
   ready: boolean;
   reason?: string;
@@ -30,6 +31,7 @@ interface CreateAppDependencies {
   redis: ProductCache;
   productSingleFlight: SingleFlight;
   productDistributedLock: DistributedLock;
+  orderEventPublisher: OrderEventPublisher;
 }
 
 
@@ -41,6 +43,7 @@ export function createApp({
   redis,
   productSingleFlight,
   productDistributedLock,
+  orderEventPublisher,
 }: CreateAppDependencies) {
   const app = express();
 
@@ -99,7 +102,7 @@ export function createApp({
 
   app.use(
     "/orders",
-    createOrderRouter(pool, {
+    createOrderRouter(pool, orderEventPublisher,{
       transactionHoldMs: config.ORDER_TRANSACTION_HOLD_MS,
 
       maxTransactionAttempts: config.TRANSACTION_MAX_ATTEMPTS,
@@ -112,32 +115,32 @@ export function createApp({
     }),
   );
 
- app.use(
-   "/products",
-   createProductRouter(
-     pool,
-     redis,
-     productSingleFlight,
-     productDistributedLock,
-     {
-       cacheTtlSeconds: config.PRODUCT_CACHE_TTL_SECONDS,
+  app.use(
+    "/products",
+    createProductRouter(
+      pool,
+      redis,
+      productSingleFlight,
+      productDistributedLock,
+      {
+        cacheTtlSeconds: config.PRODUCT_CACHE_TTL_SECONDS,
 
-       lockTtlMs: config.PRODUCT_CACHE_LOCK_TTL_MS,
+        lockTtlMs: config.PRODUCT_CACHE_LOCK_TTL_MS,
 
-       lockWaitMs: config.PRODUCT_CACHE_LOCK_WAIT_MS,
+        lockWaitMs: config.PRODUCT_CACHE_LOCK_WAIT_MS,
 
-       lockPollMs: config.PRODUCT_CACHE_LOCK_POLL_MS,
+        lockPollMs: config.PRODUCT_CACHE_LOCK_POLL_MS,
 
-       maxTransactionAttempts: config.TRANSACTION_MAX_ATTEMPTS,
+        maxTransactionAttempts: config.TRANSACTION_MAX_ATTEMPTS,
 
-       transactionRetryBaseDelayMs: config.TRANSACTION_RETRY_BASE_DELAY_MS,
+        transactionRetryBaseDelayMs: config.TRANSACTION_RETRY_BASE_DELAY_MS,
 
-       transactionLockTimeoutMs: config.TRANSACTION_LOCK_TIMEOUT_MS,
+        transactionLockTimeoutMs: config.TRANSACTION_LOCK_TIMEOUT_MS,
 
-       transactionStatementTimeoutMs: config.TRANSACTION_STATEMENT_TIMEOUT_MS,
-     },
-   ),
- );
+        transactionStatementTimeoutMs: config.TRANSACTION_STATEMENT_TIMEOUT_MS,
+      },
+    ),
+  );
 
   app.use((request, response) => {
     response.status(404).json({

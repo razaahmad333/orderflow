@@ -175,6 +175,20 @@ const environmentSchema = z.object({
     .min(0)
     .max(1)
     .default(0),
+
+  KAFKA_BROKERS: z
+    .string()
+    .min(1)
+    .transform((value) =>
+      value
+        .split(",")
+        .map((broker) => broker.trim())
+        .filter(Boolean),
+    ),
+
+  KAFKA_CLIENT_ID: z.string().min(1).default("orders-service"),
+
+  KAFKA_ORDER_CREATED_TOPIC: z.string().min(1).default("order.created.v1"),
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;
