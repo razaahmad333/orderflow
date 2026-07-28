@@ -168,6 +168,13 @@ const environmentSchema = z.object({
     .min(0)
     .max(20)
     .default(0),
+
+  SIMULATE_NOTIFICATION_CRASH_AFTER_SEND: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(1)
+    .default(0),
 });
 
 export type AppConfig = z.infer<typeof environmentSchema>;

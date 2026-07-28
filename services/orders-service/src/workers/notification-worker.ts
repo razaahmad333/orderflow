@@ -11,7 +11,11 @@ import {
 } from "../jobs/bullmq";
 
 import { createLogger } from "../logger";
+import { randomUUID } from "node:crypto";
 
+import { createDatabasePool } from "../database";
+
+import { processOrderConfirmedNotification } from "../notifications/order-confirmed-processor";
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
@@ -25,7 +29,9 @@ async function main(): Promise<void> {
     ...config,
     SERVICE_NAME: "notification-worker",
   });
+  const pool = createDatabasePool(config, logger);
 
+  const workerInstanceId = `notification-worker-${randomUUID()}`;
   const connection = createBullWorkerConnection(config);
 
   const worker = new Worker<OrderConfirmedJob>(
@@ -47,22 +53,42 @@ async function main(): Promise<void> {
         throw new Error("Simulated notification provider failure");
       }
 
-      /*
-       * Simulate an external provider call.
-       */
-      await delay(200);
+      const jobId = job.id;
+
+      if (!jobId) {
+        throw new Error("Notification job ID is required");
+      }
+
+      const result = await processOrderConfirmedNotification({
+        pool,
+        logger,
+
+        jobId,
+
+        data: job.data,
+
+        /*
+         * Crash only on the first BullMQ attempt.
+         * The retry must be allowed to finish.
+         */
+        simulateCrashAfterProviderSuccess:
+          config.SIMULATE_NOTIFICATION_CRASH_AFTER_SEND === 1 &&
+          job.attemptsMade === 0,
+      });
 
       logger.info(
         {
-          jobId: job.id,
+          workerInstanceId,
+          jobId,
           orderId: job.data.orderId,
+          skipped: result.skipped,
+          providerCreatedNow: result.providerCreatedNow,
+          providerMessageId: result.providerMessageId,
         },
-        "Order notification delivered",
+        "Order notification processing completed",
       );
 
-      return {
-        delivered: true,
-      };
+      return result;
     },
 
     {
@@ -98,7 +124,7 @@ async function main(): Promise<void> {
 
     await worker.close();
     await connection.quit();
-
+await pool.end();
     logger.info("Notification worker stopped");
   }
 

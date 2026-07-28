@@ -212,8 +212,12 @@ services:
 
       SIMULATE_NOTIFICATION_FAILURES: 0
 
+      SIMULATE_NOTIFICATION_CRASH_AFTER_SEND: 0
+
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
     restart: unless-stopped
