@@ -52,6 +52,12 @@ export async function migrateTestDatabase(): Promise<void> {
 export async function resetTestDatabase(pool: Pool): Promise<void> {
   await pool.query(`
     TRUNCATE TABLE
+      consumer_inbox,
+      background_job_outbox,
+      kafka_outbox,
+      cache_invalidation_outbox,
+      notification_deliveries,
+      simulated_provider_messages,
       order_items,
       orders,
       inventory,

@@ -8,9 +8,6 @@ import {
   type TransactionRetryEvent,
   withTransactionRetry,
 } from "../transaction";
-import { enqueueBackgroundJob } from "../jobs/background-job-outbox";
-
-import { notificationQueueName } from "../jobs/bullmq";
 import { enqueueOrderCreatedEvent } from "../outbox/kafka-outbox";
 interface ProductInventoryRow {
   product_id: string;
@@ -335,20 +332,6 @@ export async function placeOrder(
       if (!confirmed) {
         throw new Error("Confirmed order was not returned");
       }
-
-      await enqueueBackgroundJob(client, {
-        tenantId: input.tenantId,
-        queueName: notificationQueueName,
-        jobType: "order-confirmed",
-
-        payload: {
-          tenantId: input.tenantId,
-          orderId: confirmed.id,
-          externalId: confirmed.external_id,
-          totalMinor: confirmed.total_minor,
-          currency: confirmed.currency,
-        },
-      });
 
       if (options.orderCreatedTopic) {
         await enqueueOrderCreatedEvent(client, {

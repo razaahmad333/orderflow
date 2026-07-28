@@ -87,6 +87,21 @@ describe("order Kafka outbox", () => {
         externalId: "outbox-order-001",
       },
     });
+
+    const backgroundJobs = await pool.query<{
+      count: string;
+    }>(
+      `
+          SELECT COUNT(*) AS count
+          FROM background_job_outbox
+          WHERE queue_name = 'notifications'
+            AND job_type = 'order-confirmed'
+            AND payload ->> 'orderId' = $1
+        `,
+      [order.id],
+    );
+
+    expect(backgroundJobs.rows[0]?.count).toBe("0");
   });
 
   it("rolls back the event when order placement fails", async () => {
@@ -121,5 +136,51 @@ describe("order Kafka outbox", () => {
     );
 
     expect(result.rows[0]?.count).toBe("0");
+  });
+
+  it("keeps notification work out of the order transaction", async () => {
+    const order = await placeOrder(
+      pool,
+      {
+        tenantId: testTenantId,
+        externalId: "notification-boundary-001",
+        currency: "GBP",
+        items: [
+          {
+            productId: keyboardProductId,
+            quantity: 1,
+          },
+        ],
+      },
+      options,
+    );
+
+    const result = await pool.query<{
+      kafka_count: string;
+      background_count: string;
+    }>(
+      `
+        SELECT
+          (
+            SELECT COUNT(*)
+            FROM kafka_outbox
+            WHERE aggregate_id = $1
+              AND event_type = 'order.created'
+          ) AS kafka_count,
+          (
+            SELECT COUNT(*)
+            FROM background_job_outbox
+            WHERE queue_name = 'notifications'
+              AND job_type = 'order-confirmed'
+              AND payload ->> 'orderId' = $1::text
+          ) AS background_count
+      `,
+      [order.id],
+    );
+
+    expect(result.rows[0]).toEqual({
+      kafka_count: "1",
+      background_count: "0",
+    });
   });
 });

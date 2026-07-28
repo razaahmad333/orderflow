@@ -159,6 +159,8 @@ services:
       NOTIFICATION_WORKER_CONCURRENCY: 5
       SIMULATE_NOTIFICATION_FAILURES: 0
 
+      KAFKA_BROKERS: kafka:9092
+
     depends_on:
       postgres:
         condition: service_healthy
@@ -220,6 +222,8 @@ services:
       SIMULATE_NOTIFICATION_FAILURES: 0
 
       SIMULATE_NOTIFICATION_CRASH_AFTER_SEND: 0
+
+      KAFKA_BROKERS: kafka:9092
 
     depends_on:
       redis:
@@ -283,6 +287,11 @@ services:
       - dist/workers/notification-worker.kafka.js
 
     environment:
+      DATABASE_URL: >-
+        postgresql://orderflow:orderflow-dev@postgres:5432/orderflow
+
+      LOG_LEVEL: info
+
       KAFKA_BROKERS: kafka:9092
       KAFKA_ORDER_CREATED_TOPIC: order.created.v1
       KAFKA_NOTIFICATION_GROUP_ID: notification-service-v1
@@ -292,6 +301,8 @@ services:
 
     depends_on:
       kafka:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
   order-outbox-publisher:
     build:
