@@ -18,7 +18,6 @@ import type { ProductCache } from "./products/product-service";
 
 import type { SingleFlight } from "./single-flight";
 import type { DistributedLock } from "./distributed-lock";
-import type { OrderEventPublisher } from "./events/order-event-publisher";
 export interface ReadinessState {
   ready: boolean;
   reason?: string;
@@ -31,7 +30,6 @@ interface CreateAppDependencies {
   redis: ProductCache;
   productSingleFlight: SingleFlight;
   productDistributedLock: DistributedLock;
-  orderEventPublisher: OrderEventPublisher;
 }
 
 
@@ -43,7 +41,6 @@ export function createApp({
   redis,
   productSingleFlight,
   productDistributedLock,
-  orderEventPublisher,
 }: CreateAppDependencies) {
   const app = express();
 
@@ -102,7 +99,7 @@ export function createApp({
 
   app.use(
     "/orders",
-    createOrderRouter(pool, orderEventPublisher,{
+    createOrderRouter(pool,{
       transactionHoldMs: config.ORDER_TRANSACTION_HOLD_MS,
 
       maxTransactionAttempts: config.TRANSACTION_MAX_ATTEMPTS,
@@ -112,6 +109,8 @@ export function createApp({
       transactionLockTimeoutMs: config.TRANSACTION_LOCK_TIMEOUT_MS,
 
       transactionStatementTimeoutMs: config.TRANSACTION_STATEMENT_TIMEOUT_MS,
+
+      orderCreatedTopic: config.KAFKA_ORDER_CREATED_TOPIC,
     }),
   );
 

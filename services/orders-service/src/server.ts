@@ -9,9 +9,6 @@ import { createRedisClient } from "./redis";
 import { SingleFlight } from "./single-flight";
 import { RedisDistributedLock } from "./distributed-lock";
 import { startCacheInvalidationWorker } from "./cache-invalidation-worker";
-import { createOrderEventPublisher } from "./events/order-event-publisher";
-
-import { createKafkaProducer } from "./kafka";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -48,22 +45,6 @@ async function main(): Promise<void> {
     lockMs: config.CACHE_INVALIDATION_LOCK_MS,
   });
 
-  const kafkaProducer = createKafkaProducer(config);
-
-  await kafkaProducer.connect();
-
-  logger.info(
-    {
-      brokers: config.KAFKA_BROKERS,
-    },
-    "Kafka producer connected",
-  );
-
-  const orderEventPublisher = createOrderEventPublisher(
-    kafkaProducer,
-    config.KAFKA_ORDER_CREATED_TOPIC,
-  );
-
   const app = createApp({
     config,
     logger,
@@ -72,7 +53,6 @@ async function main(): Promise<void> {
     redis,
     productSingleFlight,
     productDistributedLock,
-    orderEventPublisher,
   });
   const databaseMonitor = startDatabaseMonitor({
     pool,
@@ -142,10 +122,6 @@ async function main(): Promise<void> {
       await cacheInvalidationWorker.stop();
 
       logger.info("Cache invalidation worker stopped");
-
-      await kafkaProducer.disconnect();
-
-      logger.info("Kafka producer disconnected");
 
       await pool.end();
 

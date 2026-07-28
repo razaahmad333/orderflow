@@ -80,26 +80,6 @@ describe("orders-service", () => {
     },
   };
 
-  const orderEventPublisher = {
-    async publishOrderCreated() {
-      return {
-        eventId: "30000000-0000-4000-8000-000000000001",
-
-        eventType: "order.created" as const,
-        eventVersion: 1 as const,
-        occurredAt: "2026-07-27T00:00:00.000Z",
-
-        tenantId: "00000000-0000-4000-8000-000000000001",
-
-        orderId: "20000000-0000-4000-8000-000000000001",
-
-        externalId: "test-order",
-        totalMinor: "1299",
-        currency: "GBP",
-        items: [],
-      };
-    },
-  };
 
   beforeEach(() => {
     readiness = {
@@ -114,7 +94,6 @@ describe("orders-service", () => {
       redis,
       productSingleFlight,
       productDistributedLock,
-      orderEventPublisher,
     });
   });
 

@@ -11,6 +11,7 @@ import {
 import { enqueueBackgroundJob } from "../jobs/background-job-outbox";
 
 import { notificationQueueName } from "../jobs/bullmq";
+import { enqueueOrderCreatedEvent } from "../outbox/kafka-outbox";
 interface ProductInventoryRow {
   product_id: string;
   price_minor: string;
@@ -28,6 +29,8 @@ interface PlaceOrderOptions {
   transactionStatementTimeoutMs?: number;
 
   onTransactionRetry?: (event: TransactionRetryEvent) => void;
+
+  orderCreatedTopic?: string;
 }
 
 interface OrderRow {
@@ -346,6 +349,24 @@ export async function placeOrder(
           currency: confirmed.currency,
         },
       });
+
+      if (options.orderCreatedTopic) {
+        await enqueueOrderCreatedEvent(client, {
+          topic: options.orderCreatedTopic,
+
+          tenantId: input.tenantId,
+
+          orderId: confirmed.id,
+
+          externalId: confirmed.external_id,
+
+          totalMinor: confirmed.total_minor,
+
+          currency: confirmed.currency,
+
+          items: input.items,
+        });
+      }
 
       return mapOrder(confirmed, true);
     },

@@ -293,6 +293,32 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+  order-outbox-publisher:
+    build:
+      context: ./services/orders-service
+      dockerfile: Dockerfile
 
+    command:
+      - node
+      - dist/workers/order-outbox-publisher.js
+
+    environment:
+      DATABASE_URL: >-
+        postgresql://orderflow:orderflow-dev@postgres:5432/orderflow
+
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_OUTBOX_POLL_MS: 1000
+      KAFKA_OUTBOX_BATCH_SIZE: 20
+      KAFKA_OUTBOX_LOCK_MS: 30000
+
+    init: true
+    stop_grace_period: 15s
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      kafka:
+        condition: service_healthy
 volumes:
   orderflow-postgres-data:
