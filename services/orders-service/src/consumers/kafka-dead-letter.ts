@@ -1,4 +1,4 @@
-import type { IHeaders, KafkaMessage } from "kafkajs";
+import type { IHeaders, KafkaMessage, Producer } from "kafkajs";
 import type { Pool } from "pg";
 
 export type KafkaPoisonErrorKind =
@@ -8,6 +8,19 @@ export type KafkaPoisonErrorKind =
 
 interface SerializableKafkaHeaders {
   [key: string]: string | string[];
+}
+
+export interface KafkaDeadLetterEnvelope {
+  originalTopic: string;
+  originalPartition: number;
+  originalOffset: string;
+  originalKey: string | null;
+  consumerGroup: string;
+  failureClass: "non_retryable";
+  errorCode: KafkaPoisonErrorKind;
+  errorMessage: string;
+  failedAt: string;
+  originalPayload: string | null;
 }
 
 function normalizeHeaderValue(
@@ -44,6 +57,64 @@ export function serializeKafkaHeaders(
   }
 
   return serialized;
+}
+
+export function createKafkaDeadLetterEnvelope(input: {
+  consumerGroup: string;
+  topic: string;
+  partition: number;
+  offset: string;
+  message: KafkaMessage;
+  errorKind: KafkaPoisonErrorKind;
+  errorMessage: string;
+  failedAt?: string;
+}): KafkaDeadLetterEnvelope {
+  return {
+    originalTopic: input.topic,
+    originalPartition: input.partition,
+    originalOffset: input.offset,
+    originalKey: input.message.key?.toString("utf8") ?? null,
+    consumerGroup: input.consumerGroup,
+    failureClass: "non_retryable",
+    errorCode: input.errorKind,
+    errorMessage: input.errorMessage,
+    failedAt: input.failedAt ?? new Date().toISOString(),
+    originalPayload: input.message.value?.toString("utf8") ?? null,
+  };
+}
+
+export async function publishKafkaDeadLetter(
+  producer: Producer,
+  input: {
+    dlqTopic: string;
+    envelope: KafkaDeadLetterEnvelope;
+  },
+): Promise<void> {
+  const sourcePosition = [
+    input.envelope.consumerGroup,
+    input.envelope.originalTopic,
+    input.envelope.originalPartition,
+    input.envelope.originalOffset,
+  ].join(":");
+
+  await producer.send({
+    topic: input.dlqTopic,
+    acks: -1,
+    messages: [
+      {
+        key: sourcePosition,
+        value: JSON.stringify(input.envelope),
+        headers: {
+          "failure-class": input.envelope.failureClass,
+          "error-code": input.envelope.errorCode,
+          "original-topic": input.envelope.originalTopic,
+          "original-partition": String(input.envelope.originalPartition),
+          "original-offset": input.envelope.originalOffset,
+          "consumer-group": input.envelope.consumerGroup,
+        },
+      },
+    ],
+  });
 }
 
 export async function recordPoisonKafkaMessage(

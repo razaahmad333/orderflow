@@ -1,15 +1,28 @@
 import "dotenv/config";
 
-import { Kafka, logLevel, type KafkaMessage, type Consumer } from "kafkajs";
+import {
+  Kafka,
+  logLevel,
+  type KafkaMessage,
+  type Consumer,
+  type Producer,
+} from "kafkajs";
 
 import pino from "pino";
 import { Pool } from "pg";
 import { ZodError, z } from "zod";
 
 import {
+  createKafkaDeadLetterEnvelope,
+  publishKafkaDeadLetter,
   recordPoisonKafkaMessage,
   type KafkaPoisonErrorKind,
 } from "../consumers/kafka-dead-letter";
+import {
+  createKafkaRetryEnvelope,
+  isRetryableKafkaProcessingError,
+  publishKafkaRetry,
+} from "../consumers/kafka-retry";
 import { processOrderCreatedEvent } from "../consumers/notification-consumer-inbox";
 import { orderCreatedEventSchema } from "../events/order-created-event";
 
@@ -31,6 +44,14 @@ const environmentSchema = z.object({
     ),
 
   KAFKA_ORDER_CREATED_TOPIC: z.string().default("order.created.v1"),
+
+  KAFKA_ORDER_CREATED_DLQ_TOPIC: z.string().default("order.created.v1.dlq"),
+
+  KAFKA_ORDER_CREATED_RETRY_TOPIC: z
+    .string()
+    .default("order.created.v1.retry.10s"),
+
+  KAFKA_RETRY_DELAY_MS: z.coerce.number().int().min(1_000).default(10_000),
 
   KAFKA_NOTIFICATION_GROUP_ID: z.string().default("notification-service-v1"),
 });
@@ -56,8 +77,10 @@ function getErrorMessage(error: unknown): string {
 async function deadLetterAndCommit(input: {
   pool: Pool;
   consumer: Consumer;
+  producer: Producer;
   logger: pino.Logger;
   consumerName: string;
+  dlqTopic: string;
   topic: string;
   partition: number;
   offset: string;
@@ -67,6 +90,7 @@ async function deadLetterAndCommit(input: {
   resolveOffset: (offset: string) => void;
 }): Promise<void> {
   const committedOffset = nextOffset(input.offset);
+  const errorMessage = getErrorMessage(input.error);
 
   await recordPoisonKafkaMessage(input.pool, {
     consumerName: input.consumerName,
@@ -75,7 +99,20 @@ async function deadLetterAndCommit(input: {
     offset: input.offset,
     message: input.message,
     errorKind: input.errorKind,
-    errorMessage: getErrorMessage(input.error),
+    errorMessage,
+  });
+
+  await publishKafkaDeadLetter(input.producer, {
+    dlqTopic: input.dlqTopic,
+    envelope: createKafkaDeadLetterEnvelope({
+      consumerGroup: input.consumerName,
+      topic: input.topic,
+      partition: input.partition,
+      offset: input.offset,
+      message: input.message,
+      errorKind: input.errorKind,
+      errorMessage,
+    }),
   });
 
   await input.consumer.commitOffsets([
@@ -96,9 +133,68 @@ async function deadLetterAndCommit(input: {
       offset: input.offset,
       committedOffset,
       consumerName: input.consumerName,
+      dlqTopic: input.dlqTopic,
       errorKind: input.errorKind,
     },
-    "Poison Kafka message dead-lettered and offset committed",
+    "Poison Kafka message published to DLQ and offset committed",
+  );
+}
+
+async function retryAndCommit(input: {
+  consumer: Consumer;
+  producer: Producer;
+  logger: pino.Logger;
+  consumerName: string;
+  retryTopic: string;
+  retryDelayMs: number;
+  eventId: string;
+  topic: string;
+  partition: number;
+  offset: string;
+  message: KafkaMessage;
+  error: unknown;
+  resolveOffset: (offset: string) => void;
+}): Promise<void> {
+  const committedOffset = nextOffset(input.offset);
+  const envelope = createKafkaRetryEnvelope({
+    eventId: input.eventId,
+    consumerGroup: input.consumerName,
+    topic: input.topic,
+    partition: input.partition,
+    offset: input.offset,
+    message: input.message,
+    error: input.error,
+    retryDelayMs: input.retryDelayMs,
+  });
+
+  await publishKafkaRetry(input.producer, {
+    retryTopic: input.retryTopic,
+    envelope,
+  });
+
+  await input.consumer.commitOffsets([
+    {
+      topic: input.topic,
+      partition: input.partition,
+      offset: committedOffset,
+    },
+  ]);
+
+  input.resolveOffset(input.offset);
+
+  input.logger.warn(
+    {
+      err: input.error,
+      eventId: input.eventId,
+      topic: input.topic,
+      partition: input.partition,
+      offset: input.offset,
+      committedOffset,
+      consumerName: input.consumerName,
+      retryTopic: input.retryTopic,
+      nextRetryAt: envelope.nextRetryAt,
+    },
+    "Retryable Kafka processing failure routed and offset committed",
   );
 }
 
@@ -122,6 +218,9 @@ async function main(): Promise<void> {
   const consumer = kafka.consumer({
     groupId: environment.KAFKA_NOTIFICATION_GROUP_ID,
   });
+  const producer = kafka.producer({
+    allowAutoTopicCreation: false,
+  });
 
   const pool = new Pool({
     connectionString: environment.DATABASE_URL,
@@ -129,6 +228,7 @@ async function main(): Promise<void> {
     application_name: "notification-kafka-worker",
   });
 
+  await producer.connect();
   await consumer.connect();
 
   await consumer.subscribe({
@@ -156,6 +256,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, "Notification Kafka worker shutting down");
 
     await consumer.disconnect();
+    await producer.disconnect();
     await pool.end();
   }
 
@@ -186,8 +287,10 @@ async function main(): Promise<void> {
           await deadLetterAndCommit({
             pool,
             consumer,
+            producer,
             logger,
             consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
+            dlqTopic: environment.KAFKA_ORDER_CREATED_DLQ_TOPIC,
             topic: batch.topic,
             partition: batch.partition,
             offset: message.offset,
@@ -210,8 +313,10 @@ async function main(): Promise<void> {
           await deadLetterAndCommit({
             pool,
             consumer,
+            producer,
             logger,
             consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
+            dlqTopic: environment.KAFKA_ORDER_CREATED_DLQ_TOPIC,
             topic: batch.topic,
             partition: batch.partition,
             offset: message.offset,
@@ -234,8 +339,10 @@ async function main(): Promise<void> {
           await deadLetterAndCommit({
             pool,
             consumer,
+            producer,
             logger,
             consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
+            dlqTopic: environment.KAFKA_ORDER_CREATED_DLQ_TOPIC,
             topic: batch.topic,
             partition: batch.partition,
             offset: message.offset,
@@ -331,6 +438,28 @@ async function main(): Promise<void> {
             client.release();
           }
         } catch (error) {
+          if (isRetryableKafkaProcessingError(error)) {
+            await retryAndCommit({
+              consumer,
+              producer,
+              logger,
+              consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
+              retryTopic: environment.KAFKA_ORDER_CREATED_RETRY_TOPIC,
+              retryDelayMs: environment.KAFKA_RETRY_DELAY_MS,
+              eventId: validatedEvent.eventId,
+              topic: batch.topic,
+              partition: batch.partition,
+              offset: message.offset,
+              message,
+              error,
+              resolveOffset,
+            });
+
+            await heartbeat();
+
+            continue;
+          }
+
           logger.error(
             {
               err: error,
