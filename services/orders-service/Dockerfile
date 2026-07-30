@@ -55,7 +55,7 @@ COPY --from=build \
 
 COPY --chown=node:node package.json ./
 
-USER node
+USER 1000:1000
 
 EXPOSE 3000
 
