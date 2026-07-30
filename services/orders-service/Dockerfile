@@ -1,4 +1,6 @@
-FROM node:22-alpine AS dependencies
+ARG NODE_IMAGE=node:22-alpine
+
+FROM ${NODE_IMAGE} AS dependencies
 
 WORKDIR /app
 
@@ -15,7 +17,7 @@ COPY src ./src
 RUN npm run build
 
 
-FROM node:22-alpine AS production-dependencies
+FROM ${NODE_IMAGE} AS production-dependencies
 
 WORKDIR /app
 
@@ -25,9 +27,19 @@ RUN npm ci --omit=dev \
     && npm cache clean --force
 
 
-FROM node:22-alpine AS runtime
+FROM ${NODE_IMAGE} AS runtime
+
+ARG VCS_REF=unknown
+ARG VERSION=development
+ARG BUILD_SOURCE=local
 
 ENV NODE_ENV=production
+
+LABEL org.opencontainers.image.title="OrderFlow Orders Service" \
+      org.opencontainers.image.description="OrderFlow API and worker runtime" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.source="${BUILD_SOURCE}"
 
 WORKDIR /app
 

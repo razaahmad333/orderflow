@@ -1,5 +1,44 @@
 name: orderflow
 
+x-orderflow-runtime: &orderflow-runtime
+  image: orderflow/orders-service:${ORDERFLOW_IMAGE_TAG:-local}
+  init: true
+  stop_grace_period: 15s
+  restart: unless-stopped
+
+  mem_limit: 256m
+  cpus: 0.50
+  pids_limit: 100
+
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:mode=1777
+
+x-worker-healthcheck: &worker-healthcheck
+  healthcheck:
+    test:
+      - CMD-SHELL
+      - >-
+        NODE_OPTIONS= node -e '
+        const fs = require("node:fs");
+        const file = process.env.WORKER_HEARTBEAT_FILE;
+        if (!file) process.exit(2);
+        try {
+          const ageMs = Date.now() - fs.statSync(file).mtimeMs;
+          process.exit(ageMs <= 20000 ? 0 : 1);
+        } catch {
+          process.exit(1);
+        }
+        '
+    interval: 5s
+    timeout: 2s
+    retries: 3
+    start_period: 15s
+
 services:
   redis:
     image: redis:7-alpine
@@ -9,7 +48,14 @@ services:
       - --save
       - ""
       - --appendonly
-      - "no"
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --aof-use-rdb-preamble
+      - "yes"
+
+    volumes:
+      - orderflow-redis-data:/data
 
     healthcheck:
       test:
@@ -19,6 +65,14 @@ services:
       interval: 3s
       timeout: 2s
       retries: 10
+
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 100
+    networks:
+      - backend
+
+
   postgres:
     image: postgres:16-alpine
 
@@ -42,10 +96,14 @@ services:
       retries: 10
       start_period: 5s
 
+    mem_limit: 512m
+    cpus: 0.75
+    pids_limit: 200
+    networks:
+      - backend
+
   orders-service:
-    build:
-      context: ./services/orders-service
-      dockerfile: Dockerfile
+    <<: *orderflow-runtime
 
     environment:
       NODE_ENV: production
@@ -93,10 +151,6 @@ services:
     ports:
       - "3000:3000"
 
-    init: true
-
-    stop_grace_period: 15s
-
     depends_on:
       postgres:
         condition: service_healthy
@@ -111,11 +165,17 @@ services:
       timeout: 2s
       retries: 3
       start_period: 5s
+
+    mem_limit: 1g
+    cpus: 1.00
+    pids_limit: 300
+    networks:
+      - backend
   
   job-dispatcher:
-    build:
-      context: ./services/orders-service
-      dockerfile: Dockerfile
+    <<:
+      - *orderflow-runtime
+      - *worker-healthcheck
 
     command:
       - node
@@ -161,6 +221,11 @@ services:
 
       KAFKA_BROKERS: kafka:9092
 
+
+      WORKER_HEARTBEAT_FILE: /tmp/orderflow-worker-heartbeat
+      WORKER_HEARTBEAT_INTERVAL_MS: "5000"
+      NODE_OPTIONS: --require=/app/dist/workers/heartbeat-bootstrap.js
+
     depends_on:
       postgres:
         condition: service_healthy
@@ -170,13 +235,13 @@ services:
 
       kafka:
         condition: service_healthy
-
-    restart: unless-stopped
+    networks:
+      - backend
 
   notification-worker:
-    build:
-      context: ./services/orders-service
-      dockerfile: Dockerfile
+    <<:
+      - *orderflow-runtime
+      - *worker-healthcheck
 
     command:
       - node
@@ -225,13 +290,18 @@ services:
 
       KAFKA_BROKERS: kafka:9092
 
+
+      WORKER_HEARTBEAT_FILE: /tmp/orderflow-worker-heartbeat
+      WORKER_HEARTBEAT_INTERVAL_MS: "5000"
+      NODE_OPTIONS: --require=/app/dist/workers/heartbeat-bootstrap.js
+
     depends_on:
       redis:
         condition: service_healthy
       postgres:
         condition: service_healthy
-
-    restart: unless-stopped
+    networks:
+      - backend
 
   kafka:
     image: apache/kafka:4.3.1
@@ -265,6 +335,12 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
 
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:?KAFKA_CLUSTER_ID is required}
+
+      KAFKA_LOG_DIRS: /tmp/kafka-logs
+
+    volumes:
+      - orderflow-kafka-data:/tmp/kafka-logs
     healthcheck:
       test:
         - CMD-SHELL
@@ -277,10 +353,16 @@ services:
       retries: 20
       start_period: 15s
 
+    mem_limit: 1g
+    cpus: 1.00
+    pids_limit: 300
+    networks:
+      - backend
+
   notification-kafka-worker:
-    build:
-      context: ./services/orders-service
-      dockerfile: Dockerfile
+    <<:
+      - *orderflow-runtime
+      - *worker-healthcheck
 
     command:
       - node
@@ -299,18 +381,22 @@ services:
       KAFKA_RETRY_DELAY_MS: 10000
       KAFKA_NOTIFICATION_GROUP_ID: notification-service-v1
 
-    init: true
-    stop_grace_period: 15s
+
+      WORKER_HEARTBEAT_FILE: /tmp/orderflow-worker-heartbeat
+      WORKER_HEARTBEAT_INTERVAL_MS: "5000"
+      NODE_OPTIONS: --require=/app/dist/workers/heartbeat-bootstrap.js
 
     depends_on:
       kafka:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    networks:
+      - backend
   order-outbox-publisher:
-    build:
-      context: ./services/orders-service
-      dockerfile: Dockerfile
+    <<:
+      - *orderflow-runtime
+      - *worker-healthcheck
 
     command:
       - node
@@ -325,8 +411,9 @@ services:
       KAFKA_OUTBOX_BATCH_SIZE: 20
       KAFKA_OUTBOX_LOCK_MS: 30000
 
-    init: true
-    stop_grace_period: 15s
+      WORKER_HEARTBEAT_FILE: /tmp/orderflow-worker-heartbeat
+      WORKER_HEARTBEAT_INTERVAL_MS: "5000"
+      NODE_OPTIONS: --require=/app/dist/workers/heartbeat-bootstrap.js
 
     depends_on:
       postgres:
@@ -334,5 +421,14 @@ services:
 
       kafka:
         condition: service_healthy
+    networks:
+      - backend
 volumes:
   orderflow-postgres-data:
+  orderflow-redis-data:
+  orderflow-kafka-data:
+
+networks:
+  backend:
+    name: orderflow-backend
+    driver: bridge

@@ -5,3 +5,7 @@ dist/
 coverage/
 *.log
 .DS_Store
+
+.local-backups/
+
+.build-metadata/
