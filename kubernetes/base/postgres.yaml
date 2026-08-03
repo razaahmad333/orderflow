@@ -1,5 +1,26 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-headless
+  namespace: orderflow
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: orderflow
+spec:
+  clusterIP: None
+
+  selector:
+    app.kubernetes.io/name: postgres
+
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+      protocol: TCP
+
+---
+apiVersion: v1
+kind: Service
 metadata:
   name: postgres
   namespace: orderflow
@@ -7,10 +28,29 @@ metadata:
     app.kubernetes.io/name: postgres
     app.kubernetes.io/part-of: orderflow
 spec:
-  replicas: 1
+  type: ClusterIP
 
-  strategy:
-    type: Recreate
+  selector:
+    app.kubernetes.io/name: postgres
+
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+      protocol: TCP
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: orderflow
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: orderflow
+spec:
+  serviceName: postgres-headless
+  replicas: 1
 
   selector:
     matchLabels:
@@ -81,27 +121,17 @@ spec:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
 
-      volumes:
-        - name: postgres-data
-          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+        labels:
+          app.kubernetes.io/name: postgres
+          app.kubernetes.io/part-of: orderflow
 
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-  namespace: orderflow
-  labels:
-    app.kubernetes.io/name: postgres
-    app.kubernetes.io/part-of: orderflow
-spec:
-  type: ClusterIP
+      spec:
+        accessModes:
+          - ReadWriteOnce
 
-  selector:
-    app.kubernetes.io/name: postgres
-
-  ports:
-    - name: postgres
-      port: 5432
-      targetPort: postgres
-      protocol: TCP
+        resources:
+          requests:
+            storage: 2Gi
