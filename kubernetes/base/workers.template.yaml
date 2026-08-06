@@ -1,0 +1,562 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: job-dispatcher
+  namespace: orderflow
+  labels:
+    app.kubernetes.io/name: job-dispatcher
+    app.kubernetes.io/part-of: orderflow
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: job-dispatcher
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: job-dispatcher
+        app.kubernetes.io/part-of: orderflow
+
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 15
+
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: job-dispatcher
+          image: __ORDERFLOW_IMAGE__
+          imagePullPolicy: Never
+
+          command:
+            - node
+            - dist/workers/job-dispatcher.js
+
+          envFrom:
+            - configMapRef:
+                name: orders-service-config
+
+          env:
+            - name: SERVICE_NAME
+              value: job-dispatcher
+
+            - name: DB_POOL_MAX
+              value: "5"
+
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+
+            - name: WORKER_HEARTBEAT_FILE
+              value: /tmp/orderflow-worker-heartbeat
+
+            - name: WORKER_HEARTBEAT_INTERVAL_MS
+              value: "5000"
+
+            - name: NODE_OPTIONS
+              value: --require=/app/dist/workers/heartbeat-bootstrap.js
+
+          startupProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const file = process.env.WORKER_HEARTBEAT_FILE;
+                  process.exit(file && fs.existsSync(file) ? 0 : 1);
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+
+          readinessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const file = process.env.WORKER_HEARTBEAT_FILE;
+                  try {
+                    const age = Date.now() - fs.statSync(file).mtimeMs;
+                    process.exit(age <= 20000 ? 0 : 1);
+                  } catch {
+                    process.exit(1);
+                  }
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const file = process.env.WORKER_HEARTBEAT_FILE;
+                  try {
+                    const age = Date.now() - fs.statSync(file).mtimeMs;
+                    process.exit(age <= 30000 ? 0 : 1);
+                  } catch {
+                    process.exit(1);
+                  }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          volumeMounts:
+            - name: temporary-data
+              mountPath: /tmp
+
+      volumes:
+        - name: temporary-data
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-worker
+  namespace: orderflow
+  labels:
+    app.kubernetes.io/name: notification-worker
+    app.kubernetes.io/part-of: orderflow
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification-worker
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notification-worker
+        app.kubernetes.io/part-of: orderflow
+
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 15
+
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: notification-worker
+          image: __ORDERFLOW_IMAGE__
+          imagePullPolicy: Never
+
+          command:
+            - node
+            - dist/workers/notification-worker.js
+
+          envFrom:
+            - configMapRef:
+                name: orders-service-config
+
+          env:
+            - name: SERVICE_NAME
+              value: notification-worker
+
+            - name: DB_POOL_MAX
+              value: "5"
+
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+
+            - name: WORKER_HEARTBEAT_FILE
+              value: /tmp/orderflow-worker-heartbeat
+
+            - name: WORKER_HEARTBEAT_INTERVAL_MS
+              value: "5000"
+
+            - name: NODE_OPTIONS
+              value: --require=/app/dist/workers/heartbeat-bootstrap.js
+
+          startupProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const file = process.env.WORKER_HEARTBEAT_FILE;
+                  process.exit(file && fs.existsSync(file) ? 0 : 1);
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+
+          readinessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const file = process.env.WORKER_HEARTBEAT_FILE;
+                  try {
+                    const age = Date.now() - fs.statSync(file).mtimeMs;
+                    process.exit(age <= 20000 ? 0 : 1);
+                  } catch {
+                    process.exit(1);
+                  }
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const file = process.env.WORKER_HEARTBEAT_FILE;
+                  try {
+                    const age = Date.now() - fs.statSync(file).mtimeMs;
+                    process.exit(age <= 30000 ? 0 : 1);
+                  } catch {
+                    process.exit(1);
+                  }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          volumeMounts:
+            - name: temporary-data
+              mountPath: /tmp
+
+      volumes:
+        - name: temporary-data
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-kafka-worker
+  namespace: orderflow
+  labels:
+    app.kubernetes.io/name: notification-kafka-worker
+    app.kubernetes.io/part-of: orderflow
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification-kafka-worker
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notification-kafka-worker
+        app.kubernetes.io/part-of: orderflow
+
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 15
+
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: notification-kafka-worker
+          image: __ORDERFLOW_IMAGE__
+          imagePullPolicy: Never
+
+          command:
+            - node
+            - dist/workers/notification-worker.kafka.js
+
+          envFrom:
+            - configMapRef:
+                name: orders-service-config
+
+          env:
+            - name: SERVICE_NAME
+              value: notification-kafka-worker
+
+            - name: DB_POOL_MAX
+              value: "5"
+
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+
+            - name: WORKER_HEARTBEAT_FILE
+              value: /tmp/orderflow-worker-heartbeat
+
+            - name: WORKER_HEARTBEAT_INTERVAL_MS
+              value: "5000"
+
+            - name: NODE_OPTIONS
+              value: --require=/app/dist/workers/heartbeat-bootstrap.js
+
+          startupProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const file = process.env.WORKER_HEARTBEAT_FILE;
+                  process.exit(file && fs.existsSync(file) ? 0 : 1);
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+
+          readinessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const file = process.env.WORKER_HEARTBEAT_FILE;
+                  try {
+                    const age = Date.now() - fs.statSync(file).mtimeMs;
+                    process.exit(age <= 20000 ? 0 : 1);
+                  } catch {
+                    process.exit(1);
+                  }
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const file = process.env.WORKER_HEARTBEAT_FILE;
+                  try {
+                    const age = Date.now() - fs.statSync(file).mtimeMs;
+                    process.exit(age <= 30000 ? 0 : 1);
+                  } catch {
+                    process.exit(1);
+                  }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          volumeMounts:
+            - name: temporary-data
+              mountPath: /tmp
+
+      volumes:
+        - name: temporary-data
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-outbox-publisher
+  namespace: orderflow
+  labels:
+    app.kubernetes.io/name: order-outbox-publisher
+    app.kubernetes.io/part-of: orderflow
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: order-outbox-publisher
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: order-outbox-publisher
+        app.kubernetes.io/part-of: orderflow
+
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 15
+
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: order-outbox-publisher
+          image: __ORDERFLOW_IMAGE__
+          imagePullPolicy: Never
+
+          command:
+            - node
+            - dist/workers/order-outbox-publisher.js
+
+          envFrom:
+            - configMapRef:
+                name: orders-service-config
+
+          env:
+            - name: SERVICE_NAME
+              value: order-outbox-publisher
+
+            - name: DB_POOL_MAX
+              value: "5"
+
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DATABASE_URL
+
+            - name: WORKER_HEARTBEAT_FILE
+              value: /tmp/orderflow-worker-heartbeat
+
+            - name: WORKER_HEARTBEAT_INTERVAL_MS
+              value: "5000"
+
+            - name: NODE_OPTIONS
+              value: --require=/app/dist/workers/heartbeat-bootstrap.js
+
+          startupProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const file = process.env.WORKER_HEARTBEAT_FILE;
+                  process.exit(file && fs.existsSync(file) ? 0 : 1);
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+
+          readinessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const file = process.env.WORKER_HEARTBEAT_FILE;
+                  try {
+                    const age = Date.now() - fs.statSync(file).mtimeMs;
+                    process.exit(age <= 20000 ? 0 : 1);
+                  } catch {
+                    process.exit(1);
+                  }
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const file = process.env.WORKER_HEARTBEAT_FILE;
+                  try {
+                    const age = Date.now() - fs.statSync(file).mtimeMs;
+                    process.exit(age <= 30000 ? 0 : 1);
+                  } catch {
+                    process.exit(1);
+                  }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          volumeMounts:
+            - name: temporary-data
+              mountPath: /tmp
+
+      volumes:
+        - name: temporary-data
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi

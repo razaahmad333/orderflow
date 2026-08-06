@@ -1,11 +1,28 @@
 import "dotenv/config";
 
-import { Kafka, logLevel } from "kafkajs";
+import {
+  Kafka,
+  logLevel,
+  type KafkaMessage,
+  type Consumer,
+  type Producer,
+} from "kafkajs";
 
 import pino from "pino";
 import { Pool } from "pg";
-import { z } from "zod";
+import { ZodError, z } from "zod";
 
+import {
+  createKafkaDeadLetterEnvelope,
+  publishKafkaDeadLetter,
+  recordPoisonKafkaMessage,
+  type KafkaPoisonErrorKind,
+} from "../consumers/kafka-dead-letter";
+import {
+  createKafkaRetryEnvelope,
+  isRetryableKafkaProcessingError,
+  publishKafkaRetry,
+} from "../consumers/kafka-retry";
 import { processOrderCreatedEvent } from "../consumers/notification-consumer-inbox";
 import { orderCreatedEventSchema } from "../events/order-created-event";
 
@@ -28,11 +45,157 @@ const environmentSchema = z.object({
 
   KAFKA_ORDER_CREATED_TOPIC: z.string().default("order.created.v1"),
 
+  KAFKA_ORDER_CREATED_DLQ_TOPIC: z.string().default("order.created.v1.dlq"),
+
+  KAFKA_ORDER_CREATED_RETRY_TOPIC: z
+    .string()
+    .default("order.created.v1.retry.10s"),
+
+  KAFKA_RETRY_DELAY_MS: z.coerce.number().int().min(1_000).default(10_000),
+
   KAFKA_NOTIFICATION_GROUP_ID: z.string().default("notification-service-v1"),
 });
 
 function nextOffset(offset: string): string {
   return (BigInt(offset) + 1n).toString();
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof ZodError) {
+    return error.issues
+      .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+      .join("; ");
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
+async function deadLetterAndCommit(input: {
+  pool: Pool;
+  consumer: Consumer;
+  producer: Producer;
+  logger: pino.Logger;
+  consumerName: string;
+  dlqTopic: string;
+  topic: string;
+  partition: number;
+  offset: string;
+  message: KafkaMessage;
+  errorKind: KafkaPoisonErrorKind;
+  error: unknown;
+  resolveOffset: (offset: string) => void;
+}): Promise<void> {
+  const committedOffset = nextOffset(input.offset);
+  const errorMessage = getErrorMessage(input.error);
+
+  await recordPoisonKafkaMessage(input.pool, {
+    consumerName: input.consumerName,
+    topic: input.topic,
+    partition: input.partition,
+    offset: input.offset,
+    message: input.message,
+    errorKind: input.errorKind,
+    errorMessage,
+  });
+
+  await publishKafkaDeadLetter(input.producer, {
+    dlqTopic: input.dlqTopic,
+    envelope: createKafkaDeadLetterEnvelope({
+      consumerGroup: input.consumerName,
+      topic: input.topic,
+      partition: input.partition,
+      offset: input.offset,
+      message: input.message,
+      errorKind: input.errorKind,
+      errorMessage,
+    }),
+  });
+
+  await input.consumer.commitOffsets([
+    {
+      topic: input.topic,
+      partition: input.partition,
+      offset: committedOffset,
+    },
+  ]);
+
+  input.resolveOffset(input.offset);
+
+  input.logger.warn(
+    {
+      err: input.error,
+      topic: input.topic,
+      partition: input.partition,
+      offset: input.offset,
+      committedOffset,
+      consumerName: input.consumerName,
+      dlqTopic: input.dlqTopic,
+      errorKind: input.errorKind,
+    },
+    "Poison Kafka message published to DLQ and offset committed",
+  );
+}
+
+async function retryAndCommit(input: {
+  consumer: Consumer;
+  producer: Producer;
+  logger: pino.Logger;
+  consumerName: string;
+  retryTopic: string;
+  retryDelayMs: number;
+  eventId: string;
+  topic: string;
+  partition: number;
+  offset: string;
+  message: KafkaMessage;
+  error: unknown;
+  resolveOffset: (offset: string) => void;
+}): Promise<void> {
+  const committedOffset = nextOffset(input.offset);
+  const envelope = createKafkaRetryEnvelope({
+    eventId: input.eventId,
+    consumerGroup: input.consumerName,
+    topic: input.topic,
+    partition: input.partition,
+    offset: input.offset,
+    message: input.message,
+    error: input.error,
+    retryDelayMs: input.retryDelayMs,
+  });
+
+  await publishKafkaRetry(input.producer, {
+    retryTopic: input.retryTopic,
+    envelope,
+  });
+
+  await input.consumer.commitOffsets([
+    {
+      topic: input.topic,
+      partition: input.partition,
+      offset: committedOffset,
+    },
+  ]);
+
+  input.resolveOffset(input.offset);
+
+  input.logger.warn(
+    {
+      err: input.error,
+      eventId: input.eventId,
+      topic: input.topic,
+      partition: input.partition,
+      offset: input.offset,
+      committedOffset,
+      consumerName: input.consumerName,
+      retryTopic: input.retryTopic,
+      nextRetryAt: envelope.nextRetryAt,
+    },
+    "Retryable Kafka processing failure routed and offset committed",
+  );
 }
 
 async function main(): Promise<void> {
@@ -55,6 +218,9 @@ async function main(): Promise<void> {
   const consumer = kafka.consumer({
     groupId: environment.KAFKA_NOTIFICATION_GROUP_ID,
   });
+  const producer = kafka.producer({
+    allowAutoTopicCreation: false,
+  });
 
   const pool = new Pool({
     connectionString: environment.DATABASE_URL,
@@ -62,6 +228,7 @@ async function main(): Promise<void> {
     application_name: "notification-kafka-worker",
   });
 
+  await producer.connect();
   await consumer.connect();
 
   await consumer.subscribe({
@@ -89,6 +256,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, "Notification Kafka worker shutting down");
 
     await consumer.disconnect();
+    await producer.disconnect();
     await pool.end();
   }
 
@@ -115,77 +283,140 @@ async function main(): Promise<void> {
           break;
         }
 
-        let eventId: string | undefined;
-        let orderId: string | undefined;
+        if (!message.value) {
+          await deadLetterAndCommit({
+            pool,
+            consumer,
+            producer,
+            logger,
+            consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
+            dlqTopic: environment.KAFKA_ORDER_CREATED_DLQ_TOPIC,
+            topic: batch.topic,
+            partition: batch.partition,
+            offset: message.offset,
+            message,
+            errorKind: "empty_payload",
+            error: new Error("Kafka message value is empty"),
+            resolveOffset,
+          });
+
+          await heartbeat();
+
+          continue;
+        }
+
+        let parsed;
 
         try {
-          if (!message.value) {
-            throw new Error("Kafka message value is empty");
-          }
+          parsed = JSON.parse(message.value.toString("utf8"));
+        } catch (error) {
+          await deadLetterAndCommit({
+            pool,
+            consumer,
+            producer,
+            logger,
+            consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
+            dlqTopic: environment.KAFKA_ORDER_CREATED_DLQ_TOPIC,
+            topic: batch.topic,
+            partition: batch.partition,
+            offset: message.offset,
+            message,
+            errorKind: "invalid_json",
+            error,
+            resolveOffset,
+          });
 
-          const parsed = orderCreatedEventSchema.parse(
-            JSON.parse(message.value.toString("utf8")),
-          );
+          await heartbeat();
 
-          eventId = parsed.eventId;
-          orderId = parsed.orderId;
+          continue;
+        }
+
+        let validatedEvent;
+
+        try {
+          validatedEvent = orderCreatedEventSchema.parse(parsed);
+        } catch (error) {
+          await deadLetterAndCommit({
+            pool,
+            consumer,
+            producer,
+            logger,
+            consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
+            dlqTopic: environment.KAFKA_ORDER_CREATED_DLQ_TOPIC,
+            topic: batch.topic,
+            partition: batch.partition,
+            offset: message.offset,
+            message,
+            errorKind: "schema_validation",
+            error,
+            resolveOffset,
+          });
+
+          await heartbeat();
+
+          continue;
+        }
+
+        try {
+          const eventId = validatedEvent.eventId;
+          const orderId = validatedEvent.orderId;
 
           const client = await pool.connect();
 
           try {
-          await client.query("BEGIN");
+            await client.query("BEGIN");
 
-          const result = await processOrderCreatedEvent({
-            client,
-            consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
-            topic: batch.topic,
-            partition: batch.partition,
-            offset: message.offset,
-            event: parsed,
-          });
-
-          await client.query("COMMIT");
-
-          const committedOffset = nextOffset(message.offset);
-
-          await consumer.commitOffsets([
-            {
-              topic: batch.topic,
-              partition: batch.partition,
-              offset: committedOffset,
-            },
-          ]);
-
-          resolveOffset(message.offset);
-
-          logger.info(
-            {
-              eventId: parsed.eventId,
-              orderId: parsed.orderId,
+            const result = await processOrderCreatedEvent({
+              client,
+              consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
               topic: batch.topic,
               partition: batch.partition,
               offset: message.offset,
-              consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
-              result,
-            },
-            result === "processed"
-              ? "Kafka event processed"
-              : "Duplicate Kafka event skipped",
-          );
+              event: validatedEvent,
+            });
 
-          logger.info(
-            {
-              eventId: parsed.eventId,
-              orderId: parsed.orderId,
-              topic: batch.topic,
-              partition: batch.partition,
-              offset: committedOffset,
-              consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
-            },
-            "Kafka offset committed",
-          );
+            await client.query("COMMIT");
 
-          await heartbeat();
+            const committedOffset = nextOffset(message.offset);
+
+            await consumer.commitOffsets([
+              {
+                topic: batch.topic,
+                partition: batch.partition,
+                offset: committedOffset,
+              },
+            ]);
+
+            resolveOffset(message.offset);
+
+            logger.info(
+              {
+                eventId: validatedEvent.eventId,
+                orderId: validatedEvent.orderId,
+                topic: batch.topic,
+                partition: batch.partition,
+                offset: message.offset,
+                consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
+                result,
+              },
+              result === "processed"
+                ? "Kafka event processed"
+                : "Duplicate Kafka event skipped",
+            );
+
+            logger.info(
+              {
+                eventId: validatedEvent.eventId,
+                orderId: validatedEvent.orderId,
+                topic: batch.topic,
+                partition: batch.partition,
+                offset: committedOffset,
+                consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
+              },
+              "Kafka offset committed",
+            );
+
+            await heartbeat();
           } catch (error) {
             try {
               await client.query("ROLLBACK");
@@ -207,11 +438,33 @@ async function main(): Promise<void> {
             client.release();
           }
         } catch (error) {
+          if (isRetryableKafkaProcessingError(error)) {
+            await retryAndCommit({
+              consumer,
+              producer,
+              logger,
+              consumerName: environment.KAFKA_NOTIFICATION_GROUP_ID,
+              retryTopic: environment.KAFKA_ORDER_CREATED_RETRY_TOPIC,
+              retryDelayMs: environment.KAFKA_RETRY_DELAY_MS,
+              eventId: validatedEvent.eventId,
+              topic: batch.topic,
+              partition: batch.partition,
+              offset: message.offset,
+              message,
+              error,
+              resolveOffset,
+            });
+
+            await heartbeat();
+
+            continue;
+          }
+
           logger.error(
             {
               err: error,
-              eventId,
-              orderId,
+              eventId: validatedEvent.eventId,
+              orderId: validatedEvent.orderId,
               topic: batch.topic,
               partition: batch.partition,
               offset: message.offset,
